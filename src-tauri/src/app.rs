@@ -1,6 +1,8 @@
 use llm_usage_core::cache::{CachedSnapshot, SnapshotCache};
 use llm_usage_core::providers::glm::{GlmClient, GlmUsageSnapshot};
-use llm_usage_core::providers::online::{OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot};
+use llm_usage_core::providers::online::{
+    OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot,
+};
 use llm_usage_core::secret::{SecretError, SecretVault};
 use serde::Serialize;
 use tauri::Manager;
@@ -132,13 +134,22 @@ pub async fn configure_glm(
 ) -> Result<GlmUsageSnapshot, CommandError> {
     let mut api_key = api_key;
     let client = GlmClient::new(&api_key).map_err(|_| CommandError::provider())?;
-    let snapshot = client
-        .fetch_snapshot(&start_time, &end_time)
-        .await
-        .map_err(|_| CommandError::provider())?;
-    glm_vault(&app)?
-        .save(api_key.trim())
-        .map_err(|_| CommandError::credential())?;
+    let snapshot = match client.fetch_snapshot(&start_time, &end_time).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            api_key.zeroize();
+            return Err(CommandError::provider());
+        }
+    };
+    if let Err(error) = glm_vault(&app)?.save(api_key.trim()) {
+        api_key.zeroize();
+        return Err(match error {
+            SecretError::Invalid
+            | SecretError::Protect
+            | SecretError::Io
+            | SecretError::Missing => CommandError::credential(),
+        });
+    }
     api_key.zeroize();
     cache_snapshot(&app, "glm", "glm", &snapshot)?;
     Ok(snapshot)
@@ -154,7 +165,13 @@ pub async fn sync_glm(
         SecretError::Missing => CommandError::not_configured(),
         _ => CommandError::credential(),
     })?;
-    let client = GlmClient::new(&api_key).map_err(|_| CommandError::provider())?;
+    let client = match GlmClient::new(&api_key) {
+        Ok(client) => client,
+        Err(_) => {
+            api_key.zeroize();
+            return Err(CommandError::provider());
+        }
+    };
     api_key.zeroize();
     let snapshot = client
         .fetch_snapshot(&start_time, &end_time)
@@ -172,11 +189,27 @@ pub async fn configure_online_provider(
 ) -> Result<OnlineSnapshot, CommandError> {
     let provider = online_provider(&provider_id)?;
     let mut api_key = api_key;
-    let client = OnlineClient::new(provider, &api_key).map_err(online_error)?;
-    let snapshot = client.fetch_snapshot().await.map_err(online_error)?;
-    provider_vault(&app, provider)?
+    let client = match OnlineClient::new(provider, &api_key) {
+        Ok(client) => client,
+        Err(error) => {
+            api_key.zeroize();
+            return Err(online_error(error));
+        }
+    };
+    let snapshot = match client.fetch_snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            api_key.zeroize();
+            return Err(online_error(error));
+        }
+    };
+    if provider_vault(&app, provider)?
         .save(api_key.trim())
-        .map_err(|_| CommandError::credential())?;
+        .is_err()
+    {
+        api_key.zeroize();
+        return Err(CommandError::credential());
+    }
     api_key.zeroize();
     cache_snapshot(&app, provider.id(), "online", &snapshot)?;
     Ok(snapshot)
@@ -194,7 +227,13 @@ pub async fn sync_online_provider(
             SecretError::Missing => CommandError::not_configured(),
             _ => CommandError::credential(),
         })?;
-    let client = OnlineClient::new(provider, &api_key).map_err(online_error)?;
+    let client = match OnlineClient::new(provider, &api_key) {
+        Ok(client) => client,
+        Err(error) => {
+            api_key.zeroize();
+            return Err(online_error(error));
+        }
+    };
     api_key.zeroize();
     let snapshot = client.fetch_snapshot().await.map_err(online_error)?;
     cache_snapshot(&app, provider.id(), "online", &snapshot)?;
