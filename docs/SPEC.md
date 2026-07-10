@@ -27,6 +27,9 @@
 - 最近请求流实时更新，包含供应商、模型、Token、耗时、状态；不保存提示词或回复正文。
 - 支持手动刷新和可配置自动刷新，自动刷新间隔是非敏感本地 UI 设置；日期边界使用本机时区，避免高频轮询消耗配额。
 - 每个指标标注来源：`官方用量`、`官方余额`、`本地观测`、`估算`或`不可用`。
+- 仪表盘只渲染已经保存凭据的供应商；未配置供应商集中放在“添加供应商”目录中，不占用主列表空间。
+- 每个供应商的完整明细使用原生可访问折叠控件，默认收起；摘要指标始终可见。
+- 信息密度通过更小的留白和默认收起明细提高，但正文和辅助文字不得小于 12px。
 
 ### Providers
 
@@ -41,6 +44,7 @@
 - 数据源优先级：官方套餐/用量 API > 官方余额 API > 调用响应 `usage` 与限流头 > 本地聚合；禁止网页 Cookie 抓取和私有接口逆向。
 - 适配器声明能力：今日用量、套餐余量、余额、冷却、调用明细、模型价格；UI 只展示真实具备的能力。
 - 套餐接口返回多个窗口或模型时，摘要下方默认展开全部已验证明细，不得只保留第一项；身份对象和未知原始字段不进入前端或缓存。
+- MiniMax `model_remains` 同时支持计数型额度和仅返回剩余百分比的额度。Coding Plan 新结构中的 `current_*_usage_count` 按“剩余次数”解释；不得因 `total_count = 0` 而丢弃带 `remaining_percent` 的 general/text 额度。
 - 定价表包含来源 URL、生效日期、币种及输入/输出/缓存 Token 单价，可独立更新。
 - 人民币换算保存汇率来源和更新时间；离线时使用上次汇率并标记“估算”。官方扣费优先于估算。
 - 余额变化不能可靠推出今日成本时不做差值猜测。
@@ -106,6 +110,13 @@ interface ProviderSummary {
 ```
 
 Tauri commands use typed request/response objects and a single error shape: `{ code, message }`. External responses are validated at the Rust boundary. New fields remain optional or additive.
+
+复杂凭据仍作为一个 DPAPI 加密文档保存，但在配置界面分字段输入，并在 Rust 边界反序列化和校验：
+
+- OpenAI / Codex API：OpenAI Organization Admin API Key；统计 API 组织的 completions 用量和成本，不冒充 ChatGPT 个人订阅剩余额度。
+- Claude Code：Anthropic Admin API Key；读取官方 Claude Code Analytics 日汇总，不自动读取 Claude Code 本地 OAuth 凭据。
+- Gemini Code Assist：Google Cloud Project ID + 用户主动提供的 OAuth Access Token；读取 Cloud Monitoring 指标，令牌过期后要求用户重新配置，不读取 `gcloud` 或浏览器凭据。
+- Qwen / 百炼：中国区和国际区分别配置 Prometheus HTTP API 地址 + 最小权限 AccessKey ID/Secret；读取官方 `model_usage` 和 `model_call_count`，不使用禁止自动化访问的 Coding Plan Key。
 
 ## Commands
 
@@ -173,10 +184,13 @@ pub fn cooldown_deadline(now: DateTime<Utc>, retry_after: &str) -> Option<DateTi
 5. 官方套餐返回重置时间，或调用收到 HTTP 429/标准限流头时，显示冷却截止时间与实时倒计时；未知时不猜测。
 6. 官方或本地用量存在时正确显示当日统计；首版缓存跨重启保留最近一次同步结果，历史日期查询留给本地代理/SQLite 阶段。
 7. Kimi 展示周额度、全部限额窗口、并发/总额度；MiniMax 展示全部模型的当前/周窗口及已用、剩余、上限和时间字段。
-7. API Key 不出现在数据库、应用日志、前端存储和 Git 历史中。
-8. 自动化测试、TypeScript 严格检查、Rust clippy 和生产构建全部通过。
-9. UI 支持键盘操作，正常文本对比度达到 WCAG AA，并覆盖加载/空/错误/能力不可用状态。
-10. 成本同时显示官方原币值（若有）与人民币值；估算可追溯到模型价格、生效日期和汇率时间。
+8. MiniMax 的 general/text、video、image、speech、music 等返回项全部进入折叠明细；百分比型和次数型额度均有回归测试。
+9. 未配置供应商不出现在主列表；可从供应商目录配置。所有完整明细默认折叠、可键盘展开，紧凑布局在 320px 宽度不产生横向滚动。
+10. OpenAI/Codex API、Claude Code Analytics、Gemini Code Assist Monitoring、Qwen/百炼 Monitoring 只在满足其官方凭据要求时可配置，并明确展示统计口径与限制。
+11. API Key 不出现在数据库、应用日志、前端存储和 Git 历史中。
+12. 自动化测试、TypeScript 严格检查、Rust clippy 和生产构建全部通过。
+13. UI 支持键盘操作，正常文本对比度达到 WCAG AA，并覆盖加载、空、错误和能力不可用状态。
+14. 成本同时显示官方原币值（若有）与人民币值；估算可追溯到模型价格、生效日期和汇率时间。
 
 ## Open Questions
 

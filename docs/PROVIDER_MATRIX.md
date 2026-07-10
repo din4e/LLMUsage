@@ -1,6 +1,6 @@
 # Provider Capability Matrix
 
-Last verified: 2026-07-10
+Last verified: 2026-07-11
 
 This matrix is the implementation contract for online provider adapters. A provider is only marked as supporting a capability when a public, official API documents it. Console-only data is not treated as an API, and private browser endpoints or login cookies are out of scope.
 
@@ -26,6 +26,10 @@ This matrix is the implementation contract for online provider adapters. A provi
 | OpenRouter Global | Official API: credits | Response-derived / dashboard analytics | Response-derived | Official credits remaining; request-level estimate from usage | Credits adapter plus optional observer |
 | Volcengine Ark / Doubao China | Official billing API | Official `GetInferenceUsage` API | API/response-derived where available | Official billing API | First-class online usage and billing adapter |
 | Alibaba Model Studio / Qwen China | Cloud billing API candidate; contract not yet verified | Console and bill data documented; public query contract not yet verified | Unverified | Billing data is generated with a documented delay | Keep disabled until Alibaba Cloud billing API contract and signing are tested |
+| OpenAI / Codex API | Not applicable | Official Organization Usage API with Admin key | API tier limits are separate; personal ChatGPT plan remaining quota is not exposed | Official Organization Costs API in USD | Admin-key adapter; label as API organization data, not ChatGPT subscription quota |
+| Claude Code | Not applicable | Official Claude Code Analytics API with Admin key | Subscription remaining quota is not returned | Estimated cost by model in USD cents | Daily UTC analytics adapter; aggregate without exposing actor email |
+| Gemini Code Assist | Not applicable | Official Cloud Monitoring metrics for API calls and used tokens | Published fixed quota; remaining personal quota is not returned | Not returned by monitoring metrics | Project + explicit OAuth access-token adapter; never read local Google credentials |
+| Alibaba Model Studio / Qwen China & Global | Not applicable | Official private Prometheus metrics `model_usage` and `model_call_count` | Coding Plan remaining quota remains console-only | Billing is separate from monitoring | Prometheus URL + least-privilege AccessKey adapter; Coding Plan keys are rejected |
 
 ## Official Endpoint Contracts Verified
 
@@ -34,8 +38,9 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Primary remaining-plan endpoint: `GET https://www.minimaxi.com/v1/token_plan/remains`
 - Same-region fallback: `GET https://api.minimaxi.com/v1/token_plan/remains`
 - Authentication uses `Authorization: Bearer <MINIMAX_API_KEY>`.
-- The response may expose either used/total counters or a remaining `usage_percent`; the app converts remaining percent to used percent before rendering progress.
-- Every validated `model_remains` item is retained. Current and weekly windows are rendered separately with raw used/remaining/total counts, model name, percentage, start/end timestamps and remaining duration when present.
+- The response may expose count limits, remaining percentages, or both. The current official CLI fixtures include `general` with zero count limits plus `current_*_remaining_percent`, and `video` with explicit remaining counts.
+- In `model_remains`, `current_interval_usage_count` and `current_weekly_usage_count` are remaining counts despite their names. The app derives used counts as `total - remaining` and never fabricates counts from a percentage-only entry.
+- Every validated `model_remains` item is retained. Current and weekly windows are rendered separately with model/resource name, used/remaining/limit or remaining percent, status, boost, start/end timestamps and remaining duration when present.
 - China and international Token Plan keys are separate products and must not share endpoint defaults.
 
 ### Kimi Code
@@ -124,12 +129,19 @@ These endpoints are not currently documented in GLM's public official API refere
 5. Store model keys and cloud access secrets only in the operating-system credential vault.
 6. Region selection changes endpoints, currency, pricing, and credential namespace together.
 
+## Newly Verified Official Contracts
+
+- OpenAI Organization Usage: `GET /v1/organization/usage/completions`; Organization Costs: `GET /v1/organization/costs`; both require an OpenAI Admin API Key.
+- Claude Code Analytics: `GET https://api.anthropic.com/v1/organizations/usage_report/claude_code?starting_at=YYYY-MM-DD`; requires `x-api-key` with an Anthropic Admin API Key and reports daily UTC metrics.
+- Gemini Code Assist metrics are read through Cloud Monitoring from `code_assist/api_calls_count` and `code_assist/used_tokens_count`; private project metrics require OAuth and Monitoring Viewer permission.
+- Alibaba Model Studio advanced monitoring exposes Prometheus `model_usage` and `model_call_count` through the workspace's private HTTP API with Basic authentication using an Alibaba Cloud AccessKey pair.
+
 ## Research Queue
 
 - GLM standard API balance and official publication/stability of the monitor endpoints.
 - Official publication/stability of the Kimi Code usage endpoint.
 - MiniMax international Token Plan endpoint and response schema.
-- Alibaba Cloud Model Studio usage/billing API action names, signing, granularity, and delay.
+- Alibaba Cloud Model Studio Coding Plan/Token Plan remaining quota remains console-only and is not queried with plan keys because official terms prohibit custom automated clients.
 - Tencent Hunyuan, Baidu Qianfan, SiliconFlow account-wide usage and billing APIs.
 - OpenAI, Anthropic, Gemini, Mistral, Groq, Together AI, and xAI organization usage/cost endpoints and required admin credentials.
 
@@ -149,3 +161,7 @@ These endpoints are not currently documented in GLM's public official API refere
 - Volcengine Ark usage API: https://www.volcengine.com/docs/82379/2116766
 - Volcengine billing API overview: https://www.volcengine.com/docs/6269/1165275
 - Alibaba Model Studio billing guide: https://help.aliyun.com/zh/model-studio/bill-query-and-cost-management
+- OpenAI Usage API: https://platform.openai.com/docs/api-reference/usage
+- Anthropic Claude Code Analytics API: https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api
+- Gemini Code Assist monitoring: https://cloud.google.com/gemini/docs/codeassist/monitor-gemini-code-assist
+- Alibaba Model Studio Prometheus monitoring: https://www.alibabacloud.com/help/en/model-studio/model-telemetry
