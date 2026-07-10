@@ -47,7 +47,7 @@ h2 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
 .sync-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .sync-status i { display: inline-block; width: 6px; height: 6px; margin-right: 6px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent); }
 .sync-status.syncing i { animation: pulse 1s infinite; }
-.refresh-button { border: 1px solid var(--accent); background: var(--accent); color: #111711; padding: 10px 15px; border-radius: 3px; font-size: 12px; font-weight: 750; cursor: pointer; }
+.refresh-button { border: 1px solid var(--accent); background: var(--accent); color: #111711; padding: 10px 15px; border-radius: 3px; font-size: 12px; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .refresh-button:hover { filter: brightness(1.08); }
 .refresh-button:disabled { cursor: wait; opacity: .65; }
 .metric-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); background: var(--surface); }
