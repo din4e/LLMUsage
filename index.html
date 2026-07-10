@@ -32,8 +32,8 @@
         <section class="metric-strip" aria-label="今日总览">
           <article><span>请求</span><strong id="total-requests">—</strong><small>次调用</small></article>
           <article><span>Token</span><strong id="total-tokens">—</strong><small>输入 + 输出</small></article>
-          <article><span>预估成本</span><strong id="total-cost">—</strong><small>人民币</small></article>
-          <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 3</strong><small>已配置供应商</small></article>
+          <article><span>余额/成本</span><strong id="total-cost">—</strong><small>人民币口径</small></article>
+          <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 6</strong><small>已配置供应商</small></article>
         </section>
 
         <section class="section-heading">
@@ -49,24 +49,45 @@
             <button class="row-action" type="button" data-action="configure" data-provider="glm">配置</button>
           </article>
 
-          <article class="provider-row" data-provider="kimi">
+          <article class="provider-row" data-provider="kimi_cn">
             <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Kimi</h3><p>官方余额 · Moonshot API</p></div></div>
-            <div class="usage-cell"><span>可用余额</span><strong>等待配置</strong><small>支持现金与代金券</small></div>
-            <div class="quota-cell unavailable"><span>用量口径</span><strong>余额在线查询</strong><small>日账单由平台延迟更新</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="kimi">配置</button>
+            <div class="usage-cell"><span>可用余额</span><strong id="kimi_cn-primary">等待配置</strong><small id="kimi_cn-secondary">国内站 · 现金与代金券</small></div>
+            <div class="quota-cell unavailable"><span id="kimi_cn-quota-label">用量口径</span><strong id="kimi_cn-quota-value">余额在线查询</strong><small id="kimi_cn-quota-hint">日账单由平台延迟更新</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="kimi_cn">配置</button>
           </article>
 
-          <article class="provider-row" data-provider="minimax">
+          <article class="provider-row" data-provider="kimi_global">
+            <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Kimi Global</h3><p>官方余额 · Moonshot AI</p></div></div>
+            <div class="usage-cell"><span>可用余额</span><strong id="kimi_global-primary">等待配置</strong><small id="kimi_global-secondary">国际站 API Key</small></div>
+            <div class="quota-cell unavailable"><span id="kimi_global-quota-label">用量口径</span><strong id="kimi_global-quota-value">余额在线查询</strong><small id="kimi_global-quota-hint">按官方余额返回</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="kimi_global">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="deepseek">
+            <div class="provider-identity"><span class="provider-mark deepseek">D</span><div><h3>DeepSeek</h3><p>官方余额 · API Platform</p></div></div>
+            <div class="usage-cell"><span>可用余额</span><strong id="deepseek-primary">等待配置</strong><small id="deepseek-secondary">充值与赠余额</small></div>
+            <div class="quota-cell unavailable"><span id="deepseek-quota-label">用量口径</span><strong id="deepseek-quota-value">余额在线查询</strong><small id="deepseek-quota-hint">按官方余额返回</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="deepseek">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="minimax_cn">
             <div class="provider-identity"><span class="provider-mark minimax">M</span><div><h3>MiniMax</h3><p>官方接口 · Token Plan</p></div></div>
-            <div class="usage-cell"><span>套餐余量</span><strong>等待配置</strong><small>国内站 / 国际站</small></div>
-            <div class="quota-cell unavailable"><span>冷却状态</span><strong>配置后可用</strong><small>按套餐窗口恢复</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="minimax">配置</button>
+            <div class="usage-cell"><span>套餐余量</span><strong id="minimax_cn-primary">等待配置</strong><small id="minimax_cn-secondary">国内站 · 实验接口</small></div>
+            <div class="quota-cell unavailable"><div><span id="minimax_cn-quota-label">冷却状态</span><b id="minimax_cn-quota-value">—</b></div><progress id="minimax_cn-progress" max="100" value="0">0%</progress><small id="minimax_cn-quota-hint">按套餐窗口恢复</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="minimax_cn">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="minimax_global">
+            <div class="provider-identity"><span class="provider-mark minimax">M</span><div><h3>MiniMax Global</h3><p>Token Plan · Experimental</p></div></div>
+            <div class="usage-cell"><span>套餐余量</span><strong id="minimax_global-primary">等待配置</strong><small id="minimax_global-secondary">国际站 · 实验接口</small></div>
+            <div class="quota-cell unavailable"><div><span id="minimax_global-quota-label">冷却状态</span><b id="minimax_global-quota-value">—</b></div><progress id="minimax_global-progress" max="100" value="0">0%</progress><small id="minimax_global-quota-hint">按套餐窗口恢复</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="minimax_global">配置</button>
           </article>
         </section>
 
         <section class="more-providers" id="providers">
           <span>还可接入</span>
-          <ul aria-label="更多供应商"><li>DeepSeek</li><li>Qwen</li><li>豆包</li><li>OpenAI</li><li>Claude</li><li>Gemini</li><li>OpenRouter</li></ul>
+          <ul aria-label="更多供应商"><li>Qwen</li><li>豆包</li><li>OpenAI</li><li>Claude</li><li>Gemini</li><li>OpenRouter</li></ul>
         </section>
       </main>
     </div>
