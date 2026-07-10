@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { formatCooldown, formatInteger, localDayRange } from "./domain";
+import { credentialHint, formatCooldown, formatInteger, localDayRange } from "./domain";
 import "./styles.css";
 
 interface GlmSnapshot {
@@ -40,7 +40,7 @@ interface CachedSnapshot {
 
 const providers = [
   { id: "glm", name: "智谱 GLM", configured: "has_glm_credential" },
-  { id: "kimi_cn", name: "Kimi 国内" },
+  { id: "kimi_cn", name: "Kimi Code" },
   { id: "kimi_global", name: "Kimi Global" },
   { id: "deepseek", name: "DeepSeek" },
   { id: "minimax_cn", name: "MiniMax 国内" },
@@ -58,6 +58,7 @@ const autoSyncInterval = byId<HTMLSelectElement>("auto-sync-interval");
 const dialog = byId<HTMLDialogElement>("provider-dialog");
 const providerForm = byId<HTMLFormElement>("provider-form");
 const dialogTitle = byId<HTMLElement>("dialog-title");
+const dialogCopy = byId<HTMLElement>("dialog-copy");
 const apiKeyInput = byId<HTMLInputElement>("api-key");
 const saveButton = byId<HTMLButtonElement>("save-provider");
 let selectedProvider = "glm";
@@ -110,7 +111,10 @@ function renderOnline(snapshot: OnlineSnapshot) {
       ? formatCooldown(snapshot.cooldownEndsAtMs)
       : sourceLabel(snapshot);
   }
-  if (progress && snapshot.quotaUsedPercent != null) progress.value = snapshot.quotaUsedPercent;
+  if (progress) {
+    progress.hidden = snapshot.quotaUsedPercent == null;
+    if (snapshot.quotaUsedPercent != null) progress.value = snapshot.quotaUsedPercent;
+  }
   renderTotals();
 }
 
@@ -233,6 +237,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-action='configure']").forEac
   button.addEventListener("click", () => {
     selectedProvider = button.dataset.provider ?? "glm";
     if (dialogTitle) dialogTitle.textContent = `配置 ${providerName(selectedProvider)}`;
+    if (dialogCopy) dialogCopy.textContent = credentialHint(selectedProvider);
     dialog?.showModal();
     apiKeyInput?.focus();
   });

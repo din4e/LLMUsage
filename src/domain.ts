@@ -30,6 +30,16 @@ export function formatInteger(value: number): string {
   return `${(value / 10_000).toFixed(1)}万`;
 }
 
+export function credentialHint(providerId: string): string {
+  if (providerId === "kimi_cn") {
+    return "Kimi Code 请使用会员控制台生成的 Key（通常以 sk-kimi- 开头）；Moonshot 开放平台 Key 也可配置，将自动查询 API 余额。";
+  }
+  if (providerId === "minimax_cn" || providerId === "minimax_global") {
+    return "请使用 Token Plan 订阅 Key（通常以 sk-cp- 开头）；普通按量 API Key 不可查询套餐用量。";
+  }
+  return "密钥由 Windows DPAPI 加密，仅当前用户可解密，不会写入数据库或日志。";
+}
+
 export function summarizeProviders(providers: ProviderMetrics[]): ProviderMetrics {
   return providers.reduce<ProviderMetrics>(
     (total, provider) => ({

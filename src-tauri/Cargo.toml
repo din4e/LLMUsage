@@ -12,6 +12,7 @@ name = "llm_usage_core"
 path = "src/lib.rs"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 libloading = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

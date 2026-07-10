@@ -50,6 +50,20 @@ impl CommandError {
             message: "供应商在线同步失败，请检查密钥或稍后重试",
         }
     }
+
+    fn kimi_code_provider() -> Self {
+        Self {
+            code: "KIMI_CODE_SYNC_FAILED",
+            message: "Kimi Code 同步失败：请使用 Kimi 会员控制台生成的 Key；Moonshot 开放平台 Key 会自动改查 API 余额",
+        }
+    }
+
+    fn minimax_token_plan_provider() -> Self {
+        Self {
+            code: "MINIMAX_TOKEN_PLAN_SYNC_FAILED",
+            message: "MiniMax Token Plan 同步失败：请使用订阅 Key，不能使用按量付费 API Key",
+        }
+    }
 }
 
 fn glm_vault(app: &tauri::AppHandle) -> Result<SecretVault, CommandError> {
@@ -95,10 +109,23 @@ fn online_provider(provider_id: &str) -> Result<OnlineProvider, CommandError> {
     OnlineProvider::from_id(provider_id).ok_or_else(CommandError::invalid_provider)
 }
 
-fn online_error(error: OnlineError) -> CommandError {
+fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
     match error {
         OnlineError::InvalidProvider => CommandError::invalid_provider(),
         OnlineError::InvalidCredential => CommandError::online_provider(),
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::KimiCn =>
+        {
+            CommandError::kimi_code_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if matches!(
+                provider,
+                OnlineProvider::MiniMaxCn | OnlineProvider::MiniMaxGlobal
+            ) =>
+        {
+            CommandError::minimax_token_plan_provider()
+        }
         OnlineError::InvalidJson
         | OnlineError::ApiRejected
         | OnlineError::SchemaMismatch
@@ -193,14 +220,14 @@ pub async fn configure_online_provider(
         Ok(client) => client,
         Err(error) => {
             api_key.zeroize();
-            return Err(online_error(error));
+            return Err(online_error(provider, error));
         }
     };
     let snapshot = match client.fetch_snapshot().await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             api_key.zeroize();
-            return Err(online_error(error));
+            return Err(online_error(provider, error));
         }
     };
     if provider_vault(&app, provider)?
@@ -231,11 +258,32 @@ pub async fn sync_online_provider(
         Ok(client) => client,
         Err(error) => {
             api_key.zeroize();
-            return Err(online_error(error));
+            return Err(online_error(provider, error));
         }
     };
     api_key.zeroize();
-    let snapshot = client.fetch_snapshot().await.map_err(online_error)?;
+    let snapshot = client
+        .fetch_snapshot()
+        .await
+        .map_err(|error| online_error(provider, error))?;
     cache_snapshot(&app, provider.id(), "online", &snapshot)?;
     Ok(snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explains_kimi_code_and_minimax_key_types() {
+        let kimi = online_error(OnlineProvider::KimiCn, OnlineError::ApiRejected);
+        assert_eq!(kimi.code, "KIMI_CODE_SYNC_FAILED");
+        assert!(kimi.message.contains("Kimi 会员控制台"));
+        assert!(kimi.message.contains("Moonshot"));
+
+        let minimax = online_error(OnlineProvider::MiniMaxCn, OnlineError::ApiRejected);
+        assert_eq!(minimax.code, "MINIMAX_TOKEN_PLAN_SYNC_FAILED");
+        assert!(minimax.message.contains("订阅 Key"));
+        assert!(minimax.message.contains("按量付费"));
+    }
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatCooldown, formatInteger, localDayRange, summarizeProviders } from "./domain";
+import {
+  credentialHint,
+  formatCooldown,
+  formatInteger,
+  localDayRange,
+  summarizeProviders,
+} from "./domain";
 
 describe("formatCooldown", () => {
   it("formats a future reset using hours and minutes", () => {
@@ -38,5 +44,14 @@ describe("localDayRange", () => {
       startTime: "2026-07-10 00:00:00",
       endTime: "2026-07-10 23:59:59",
     });
+  });
+});
+
+describe("credentialHint", () => {
+  it("distinguishes subscription keys from pay-as-you-go keys", () => {
+    expect(credentialHint("kimi_cn")).toContain("sk-kimi-");
+    expect(credentialHint("kimi_cn")).toContain("Moonshot");
+    expect(credentialHint("minimax_cn")).toContain("sk-cp-");
+    expect(credentialHint("minimax_cn")).toContain("按量 API Key 不可查询");
   });
 });

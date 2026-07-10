@@ -18,7 +18,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 | MiniMax China, pay-as-you-go | Unverified | Response-derived | Response-derived | Estimate from usage and dated price table | Enable request observation; do not claim account-wide usage |
 | MiniMax China, Token Plan | Experimental API-key endpoint: remaining quota | Experimental endpoint: plan remaining usage | Reset fields when present; documented resource-limit error otherwise | Subscription usage, not per-call RMB cost | Experimental online plan adapter |
 | Kimi/Moonshot China API | Official API balance | Console only; daily billing may update the next morning | Response-derived for inference rate limits | Console only or response-derived estimate | Balance adapter plus optional observer |
-| Kimi Code | Unverified public API | Console only | Console only; documented 5-hour rolling window and 7-day quota refresh | Included in subscription | Do not scrape; show setup limitation until a public API exists |
+| Kimi Code | Not applicable | Experimental API-key endpoint returns normalized quota | Experimental endpoint returns 5-hour and weekly reset timestamps | Included in subscription | Experimental online adapter with Moonshot balance fallback |
 | GLM China API / Coding Plan | Community-verified API-key endpoints | Community-verified model and tool usage endpoints | Community-verified quota endpoint returns reset timestamps; official FAQ documents 5-hour and weekly limits | Included in subscription or response-derived estimate | Experimental online adapter with strict validation and graceful fallback |
 | DeepSeek China API | Official API | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
 | SiliconFlow China API | Official API: user info balance | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
@@ -31,10 +31,18 @@ This matrix is the implementation contract for online provider adapters. A provi
 
 ### MiniMax China Token Plan
 
-- Remaining-plan endpoint used by the app: `GET https://api.minimaxi.com/v1/token_plan/remains`
+- Primary remaining-plan endpoint: `GET https://www.minimaxi.com/v1/token_plan/remains`
+- Same-region fallback: `GET https://api.minimaxi.com/v1/token_plan/remains`
 - Authentication uses `Authorization: Bearer <MINIMAX_API_KEY>`.
 - The response may expose either used/total counters or a remaining `usage_percent`; the app converts remaining percent to used percent before rendering progress.
 - China and international Token Plan keys are separate products and must not share endpoint defaults.
+
+### Kimi Code
+
+- Experimental usage endpoint: `GET https://api.kimi.com/coding/v1/usages`
+- Authentication uses the Kimi Code membership API Key, commonly prefixed `sk-kimi-`; it is not interchangeable with a Moonshot Open Platform key.
+- The observed response exposes the weekly quota in `usage` and the rolling 5-hour window in `limits`, with RFC 3339 reset timestamps.
+- The China adapter recognizes the `sk-kimi-` key family and contacts only the Kimi Code endpoint. Other Kimi China keys use the official Moonshot balance endpoint, preventing a credential from being sent across the two product surfaces.
 
 ### Kimi/Moonshot China API
 
@@ -102,7 +110,7 @@ These endpoints are not currently documented in GLM's public official API refere
 
 - Uses a rolling 5-hour frequency window and a quota that refreshes every 7 days from the subscription start date.
 - All logged-in devices and plan keys share the quota.
-- Public documentation points users to the Kimi Code console; no public quota-query API has yet been verified.
+- The public product documentation points users to the console; the API-key usage endpoint is therefore treated as experimental despite being confirmed in the provider's community support forum.
 
 ## Security and UX Rules
 
@@ -116,7 +124,7 @@ These endpoints are not currently documented in GLM's public official API refere
 ## Research Queue
 
 - GLM standard API balance and official publication/stability of the monitor endpoints.
-- Kimi Code public quota endpoint.
+- Official publication/stability of the Kimi Code usage endpoint.
 - MiniMax international Token Plan endpoint and response schema.
 - Alibaba Cloud Model Studio usage/billing API action names, signing, granularity, and delay.
 - Tencent Hunyuan, Baidu Qianfan, SiliconFlow account-wide usage and billing APIs.
@@ -129,6 +137,7 @@ These endpoints are not currently documented in GLM's public official API refere
 - Kimi balance API: https://platform.kimi.com/docs/api/balance
 - Kimi balance and usage help: https://www.kimi.com/help/kimi-api/api-balance-and-usage
 - Kimi Code benefits: https://www.kimi.com/zh-cn/help/kimi-code/benefits
+- Kimi Code experimental usage endpoint confirmation: https://forum.moonshot.ai/t/error-code-429-were-receiving-too-many-requests-at-the-moment/191
 - GLM Coding Plan FAQ: https://docs.bigmodel.cn/cn/coding-plan/faq
 - Community GLM monitor reference (MIT): https://github.com/LaughSmiles/glm-key-monitor
 - DeepSeek balance API: https://api-docs.deepseek.com/zh-cn/api/get-user-balance
