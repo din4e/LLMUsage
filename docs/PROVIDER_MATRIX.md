@@ -16,8 +16,8 @@ This matrix is the implementation contract for online provider adapters. A provi
 | Provider / region | Online balance | Online usage | Plan reset / cooldown | Cost | Adapter decision |
 |---|---|---|---|---|---|
 | MiniMax China, pay-as-you-go | Unverified | Response-derived | Response-derived | Estimate from usage and dated price table | Enable request observation; do not claim account-wide usage |
-| MiniMax China, Token Plan | Official API: remaining quota | Official API: plan remaining usage | Official API when reset fields are present; documented resource-limit error otherwise | Subscription usage, not per-call RMB cost | First-class online plan adapter |
-| Kimi/Moonshot China API | Official API | Console only; daily billing may update the next morning | Response-derived for inference rate limits | Console only or response-derived estimate | Balance adapter plus optional observer |
+| MiniMax China, Token Plan | Experimental API-key endpoint: remaining quota | Experimental endpoint: plan remaining usage | Reset fields when present; documented resource-limit error otherwise | Subscription usage, not per-call RMB cost | Experimental online plan adapter |
+| Kimi/Moonshot China API | Official API balance | Console only; daily billing may update the next morning | Response-derived for inference rate limits | Console only or response-derived estimate | Balance adapter plus optional observer |
 | Kimi Code | Unverified public API | Console only | Console only; documented 5-hour rolling window and 7-day quota refresh | Included in subscription | Do not scrape; show setup limitation until a public API exists |
 | GLM China API / Coding Plan | Community-verified API-key endpoints | Community-verified model and tool usage endpoints | Community-verified quota endpoint returns reset timestamps; official FAQ documents 5-hour and weekly limits | Included in subscription or response-derived estimate | Experimental online adapter with strict validation and graceful fallback |
 | DeepSeek China API | Official API | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
@@ -31,8 +31,9 @@ This matrix is the implementation contract for online provider adapters. A provi
 
 ### MiniMax China Token Plan
 
-- Remaining-plan endpoint: `GET https://www.minimaxi.com/v1/token_plan/remains`
-- Authentication uses the Token Plan key according to the official Token Plan FAQ.
+- Remaining-plan endpoint used by the app: `GET https://api.minimaxi.com/v1/token_plan/remains`
+- Authentication uses `Authorization: Bearer <MINIMAX_API_KEY>`.
+- The response may expose either used/total counters or a remaining `usage_percent`; the app converts remaining percent to used percent before rendering progress.
 - China and international Token Plan keys are separate products and must not share endpoint defaults.
 
 ### Kimi/Moonshot China API
@@ -40,6 +41,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Balance endpoint: `GET https://api.moonshot.cn/v1/users/me/balance`
 - Authentication: `Authorization: Bearer <MOONSHOT_API_KEY>`.
 - Response exposes available, voucher, and cash balances.
+- This is the Kimi/Moonshot API account balance, not Kimi Code subscription quota or cooldown.
 - Official help describes daily per-model usage and cost in the console, but says daily billing is updated by 07:00 the following day. This is not a real-time public usage API.
 
 ### DeepSeek China API

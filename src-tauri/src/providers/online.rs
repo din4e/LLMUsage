@@ -60,7 +60,7 @@ impl OnlineProvider {
             Self::KimiCn => "https://api.moonshot.cn/v1/users/me/balance",
             Self::KimiGlobal => "https://api.moonshot.ai/v1/users/me/balance",
             Self::DeepSeek => "https://api.deepseek.com/user/balance",
-            Self::MiniMaxCn => "https://www.minimaxi.com/v1/token_plan/remains",
+            Self::MiniMaxCn => "https://api.minimaxi.com/v1/token_plan/remains",
             Self::MiniMaxGlobal => "https://www.minimax.io/v1/token_plan/remains",
             Self::SiliconFlowCn => "https://api.siliconflow.cn/v1/user/info",
             Self::SiliconFlowGlobal => "https://api.siliconflow.com/v1/user/info",
@@ -282,13 +282,34 @@ fn parse_minimax(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot,
     if looks_like_minimax_rejection(&value) {
         return Err(OnlineError::ApiRejected);
     }
-    let (used, total) = find_quota_pair(&value).ok_or(OnlineError::SchemaMismatch)?;
-    if total == 0 || used > total {
-        return Err(OnlineError::SchemaMismatch);
-    }
-    let percent = used as f64 / total as f64 * 100.0;
+    let quota = find_quota_pair(&value)
+        .and_then(|(used, total)| {
+            if total == 0 || used > total {
+                None
+            } else {
+                Some((
+                    used as f64 / total as f64 * 100.0,
+                    format!("已用 {used} / {total}"),
+                ))
+            }
+        })
+        .or_else(|| {
+            let remaining_percent = find_f64_key(&value, "usage_percent")
+                .or_else(|| find_f64_key(&value, "usagePercent"))?;
+            if !remaining_percent.is_finite() || !(0.0..=100.0).contains(&remaining_percent) {
+                None
+            } else {
+                let used_percent = 100.0 - remaining_percent;
+                Some((used_percent, format!("剩余 {remaining_percent:.1}%")))
+            }
+        })
+        .ok_or(OnlineError::SchemaMismatch)?;
     let cooldown = find_i64_key(&value, "next_reset_time")
+        .or_else(|| find_i64_key(&value, "nextResetTime"))
         .or_else(|| find_i64_key(&value, "reset_time"))
+        .or_else(|| find_i64_key(&value, "resetTime"))
+        .or_else(|| find_i64_key(&value, "end_time"))
+        .or_else(|| find_i64_key(&value, "endTime"))
         .or_else(|| find_i64_key(&value, "expire_time"));
     Ok(OnlineSnapshot {
         provider_id: provider.id().to_string(),
@@ -297,14 +318,14 @@ fn parse_minimax(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot,
         experimental: provider.experimental(),
         balance_cny: None,
         balance_original: None,
-        quota_used_percent: Some(percent),
+        quota_used_percent: Some(quota.0),
         cooldown_ends_at_ms: cooldown,
         requests: None,
         total_tokens: None,
         estimated_cost_cny: None,
         primary_label: "套餐用量".to_string(),
-        primary_value: format!("{percent:.1}%"),
-        secondary_value: format!("已用 {used} / {total}"),
+        primary_value: format!("{:.1}%", quota.0),
+        secondary_value: quota.1,
     })
 }
 
@@ -475,9 +496,30 @@ fn find_i64_key(value: &Value, key: &str) -> Option<i64> {
     }
 }
 
+fn find_f64_key(value: &Value, key: &str) -> Option<f64> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key).and_then(number_like_f64) {
+                return Some(found);
+            }
+            map.values().find_map(|child| find_f64_key(child, key))
+        }
+        Value::Array(items) => items.iter().find_map(|child| find_f64_key(child, key)),
+        _ => None,
+    }
+}
+
 fn number_like_u64(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
+fn number_like_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
         Value::String(text) => text.parse().ok(),
         _ => None,
     }
@@ -513,7 +555,7 @@ mod tests {
             .expect("request");
         assert_eq!(
             minimax.url().as_str(),
-            "https://www.minimaxi.com/v1/token_plan/remains"
+            "https://api.minimaxi.com/v1/token_plan/remains"
         );
     }
 
@@ -571,6 +613,26 @@ mod tests {
         assert_eq!(snapshot.quota_used_percent, Some(37.5));
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
         assert!(snapshot.experimental);
+    }
+
+    #[test]
+    fn parses_minimax_remaining_percent_as_used_percent() {
+        let json = r#"{
+          "base_resp": {"status_code": 0, "status_msg": ""},
+          "data": [{
+            "model_type": "general",
+            "usage_percent": 72.5,
+            "end_time": 1783686600000
+          }]
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::MiniMaxCn, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "minimax_cn");
+        assert_eq!(snapshot.quota_used_percent, Some(27.5));
+        assert_eq!(snapshot.primary_value, "27.5%");
+        assert_eq!(snapshot.secondary_value, "剩余 72.5%");
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
     }
 
     #[test]

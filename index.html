@@ -25,6 +25,7 @@
           </div>
           <div class="topbar-actions">
             <span class="sync-status" id="sync-status" role="status"><i></i> 数据已就绪</span>
+            <label class="auto-sync-control" for="auto-sync-interval"><span>自动</span><select id="auto-sync-interval" aria-label="自动拉取间隔"><option value="0">关闭</option><option value="60">1 分钟</option><option value="300">5 分钟</option><option value="900">15 分钟</option></select></label>
             <button class="refresh-button" id="refresh-button" type="button">立即同步</button>
           </div>
         </header>
@@ -50,9 +51,9 @@
           </article>
 
           <article class="provider-row" data-provider="kimi_cn">
-            <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Kimi</h3><p>官方余额 · Moonshot API</p></div></div>
-            <div class="usage-cell"><span>可用余额</span><strong id="kimi_cn-primary">等待配置</strong><small id="kimi_cn-secondary">国内站 · 现金与代金券</small></div>
-            <div class="quota-cell unavailable"><span id="kimi_cn-quota-label">用量口径</span><strong id="kimi_cn-quota-value">余额在线查询</strong><small id="kimi_cn-quota-hint">日账单由平台延迟更新</small></div>
+            <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Moonshot API</h3><p>Kimi 模型 · 官方余额</p></div></div>
+            <div class="usage-cell"><span>API 余额</span><strong id="kimi_cn-primary">等待配置</strong><small id="kimi_cn-secondary">现金与代金券</small></div>
+            <div class="quota-cell unavailable"><span id="kimi_cn-quota-label">口径</span><strong id="kimi_cn-quota-value">API 余额</strong><small id="kimi_cn-quota-hint">不是 Kimi Code 冷却额度</small></div>
             <button class="row-action" type="button" data-action="configure" data-provider="kimi_cn">配置</button>
           </article>
 

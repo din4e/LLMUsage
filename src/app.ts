@@ -54,6 +54,7 @@ const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) 
 const refreshButton = byId<HTMLButtonElement>("refresh-button");
 const syncStatus = byId<HTMLElement>("sync-status");
 const themeButton = byId<HTMLButtonElement>("theme-toggle");
+const autoSyncInterval = byId<HTMLSelectElement>("auto-sync-interval");
 const dialog = byId<HTMLDialogElement>("provider-dialog");
 const providerForm = byId<HTMLFormElement>("provider-form");
 const dialogTitle = byId<HTMLElement>("dialog-title");
@@ -63,6 +64,8 @@ let selectedProvider = "glm";
 let glmResetAt: number | null = null;
 let glmSnapshot: GlmSnapshot | null = null;
 const onlineSnapshots = new Map<string, OnlineSnapshot>();
+let autoSyncTimer: number | null = null;
+let isSyncing = false;
 
 function setStatus(message: string, state: "ready" | "syncing" | "error" = "ready") {
   syncStatus?.classList.toggle("syncing", state === "syncing");
@@ -163,11 +166,17 @@ async function syncOnline(providerId: string, showUnconfigured = false) {
 }
 
 async function syncAll(showUnconfigured = false) {
-  await syncGlm(showUnconfigured);
-  for (const provider of providers.filter((item) => item.id !== "glm")) {
-    await syncOnline(provider.id, showUnconfigured);
+  if (isSyncing) return;
+  isSyncing = true;
+  try {
+    await syncGlm(showUnconfigured);
+    for (const provider of providers.filter((item) => item.id !== "glm")) {
+      await syncOnline(provider.id, showUnconfigured);
+    }
+    renderTotals();
+  } finally {
+    isSyncing = false;
   }
-  renderTotals();
 }
 
 function providerName(providerId: string) {
@@ -188,6 +197,19 @@ async function loadCache() {
   }
 }
 
+function applyAutoSync(seconds: number) {
+  if (autoSyncTimer !== null) {
+    window.clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+  if (seconds <= 0) {
+    setStatus("自动拉取已关闭");
+    return;
+  }
+  autoSyncTimer = window.setInterval(() => void syncAll(false), seconds * 1000);
+  setStatus(`自动拉取：${seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`}`);
+}
+
 refreshButton?.addEventListener("click", async () => {
   refreshButton.disabled = true;
   refreshButton.textContent = "同步中…";
@@ -199,6 +221,12 @@ refreshButton?.addEventListener("click", async () => {
 themeButton?.addEventListener("click", () => {
   const light = document.documentElement.toggleAttribute("data-light");
   themeButton.setAttribute("aria-label", light ? "切换深色主题" : "切换浅色主题");
+});
+
+autoSyncInterval?.addEventListener("change", () => {
+  const seconds = Number(autoSyncInterval.value);
+  window.localStorage.setItem("llm-usage:auto-sync-seconds", String(seconds));
+  applyAutoSync(seconds);
 });
 
 document.querySelectorAll<HTMLButtonElement>("[data-action='configure']").forEach((button) => {
@@ -250,6 +278,9 @@ apiKeyInput?.addEventListener("input", () => apiKeyInput.setCustomValidity(""));
 dialog?.addEventListener("close", () => { if (apiKeyInput) apiKeyInput.value = ""; });
 window.setInterval(updateCooldown, 30_000);
 void (async () => {
+  const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");
+  if (autoSyncInterval && Number.isFinite(savedAutoSync)) autoSyncInterval.value = String(savedAutoSync);
+  applyAutoSync(Number.isFinite(savedAutoSync) ? savedAutoSync : 0);
   await loadCache();
   await syncAll();
 })();
