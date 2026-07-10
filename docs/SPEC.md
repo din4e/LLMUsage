@@ -10,7 +10,7 @@
 
 1. 第一目标平台是 Windows 10/11，发布包目标小于 15 MB（不含系统 WebView2）；架构保留 macOS/Linux 可移植性。
 2. “今天用了多少”优先采用供应商官方在线统计，可包含其他客户端产生的用量；若无公开查询接口，则降级显示官方余额或本地可观察调用，并清楚标注口径。
-3. API Key 由用户自行提供，使用 Windows DPAPI 绑定当前用户加密后保存在应用数据目录，不写入 SQLite、日志或前端存储。
+3. API Key 由用户自行提供，使用 Windows DPAPI 绑定当前用户加密后保存在应用数据目录，不写入缓存、日志或前端存储。
 4. 首发内置 GLM、Kimi、MiniMax，并尽可能覆盖 DeepSeek、Qwen/百炼、豆包/火山方舟、腾讯混元、百度千帆、硅基流动，以及 OpenAI、Anthropic、Gemini、OpenRouter、Mistral、Groq、Together AI、xAI；国内站和国际站分别建模。
 5. 冷却时间优先读取官方/兼容用量接口的重置时间，其次读取 `Retry-After` 和供应商限流响应头；没有可靠数据时显示“未知”。
 6. 首版提供在线同步与仪表盘；本地代理是可选增强，不拦截或修改其他应用的网络流量。
@@ -54,7 +54,7 @@
 
 ### Data and Privacy
 
-- SQLite 只保存供应商非敏感配置、聚合所需请求元数据和应用设置。
+- 首版使用非敏感 JSON snapshot cache 保存上次在线同步结果，避免 SQLite 增大安装包；后续引入历史查询或本地代理明细时再迁移到 SQLite。
 - API Key 在 Windows 使用当前用户级 DPAPI 加密；其他平台发布前映射到各自系统 keyring。
 - 支持清除历史记录与删除供应商凭据。
 - 所有供应商 URL 必须为 HTTPS；仅本地回环代理允许 HTTP。
@@ -69,10 +69,10 @@
 ## Tech Stack
 
 - Tauri 2：系统 WebView 桌面壳，减少安装体积。
-- Rust：代理、SQLite、凭据库、事件推送和供应商适配。
+- Rust：凭据库、snapshot cache、事件推送和供应商适配；可选代理在后续切片加入。
 - 原生 TypeScript + HTML + CSS：不引入 React/Vue 运行时，控制体积与启动速度。
 - Vite：前端开发和静态构建。
-- SQLite：单文件本地数据库，迁移由 Rust 管理。
+- JSON snapshot cache：首版只缓存非敏感的最新同步结果，保持安装包体积；SQLite 留作历史明细和本地代理阶段。
 
 选择原生前端而非大型 UI 框架，是为了以更少依赖获得更小包体；设计系统使用 CSS 自定义属性、语义化组件类和原生控件。
 
@@ -119,7 +119,7 @@ Tauri commands use typed request/response objects and a single error shape: `{ c
 
 - `src/` — 原生 TypeScript UI、样式与前端测试。
 - `src-tauri/src/` — Rust 应用、在线同步、可选代理、存储、凭据及供应商模块。
-- `src-tauri/migrations/` — SQLite 迁移。
+- `src-tauri/src/cache.rs` — 非敏感 snapshot cache。
 - `docs/` — 产品规格、架构决策和发布说明。
 - `tests/` — 跨模块集成测试（需要时）。
 
@@ -170,7 +170,7 @@ pub fn cooldown_deadline(now: DateTime<Utc>, retry_after: &str) -> Option<DateTi
 3. 核心国内与国际供应商均有能力声明、区域端点和测试覆盖；自定义 OpenAI 兼容配置可用。
 4. 在线同步完成后仪表盘在 1 秒内更新，无需整页刷新，并展示来源与最后更新时间。
 5. 官方套餐返回重置时间，或调用收到 HTTP 429/标准限流头时，显示冷却截止时间与实时倒计时；未知时不猜测。
-6. 官方或本地用量存在时正确显示当日统计；缓存跨重启保留，并可查询历史日期。
+6. 官方或本地用量存在时正确显示当日统计；首版缓存跨重启保留最近一次同步结果，历史日期查询留给本地代理/SQLite 阶段。
 7. API Key 不出现在数据库、应用日志、前端存储和 Git 历史中。
 8. 自动化测试、TypeScript 严格检查、Rust clippy 和生产构建全部通过。
 9. UI 支持键盘操作，正常文本对比度达到 WCAG AA，并覆盖加载/空/错误/能力不可用状态。

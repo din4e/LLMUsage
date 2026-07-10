@@ -48,7 +48,7 @@ impl OnlineProvider {
             Self::KimiCn => "https://api.moonshot.cn/v1/users/me/balance",
             Self::KimiGlobal => "https://api.moonshot.ai/v1/users/me/balance",
             Self::DeepSeek => "https://api.deepseek.com/user/balance",
-            Self::MiniMaxCn => "https://api.minimaxi.com/v1/token_plan/remains",
+            Self::MiniMaxCn => "https://www.minimaxi.com/v1/token_plan/remains",
             Self::MiniMaxGlobal => "https://www.minimax.io/v1/token_plan/remains",
         }
     }
@@ -394,6 +394,15 @@ mod tests {
         );
         assert_eq!(request.headers()["authorization"], "Bearer moonshot-key");
         assert!(request.headers()["authorization"].is_sensitive());
+
+        let minimax = OnlineClient::new(OnlineProvider::MiniMaxCn, "token-plan-key")
+            .expect("client")
+            .request()
+            .expect("request");
+        assert_eq!(
+            minimax.url().as_str(),
+            "https://www.minimaxi.com/v1/token_plan/remains"
+        );
     }
 
     #[test]
