@@ -1,5 +1,8 @@
 use serde::Deserialize;
 use std::fmt;
+use std::time::Duration;
+
+const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
 
 #[derive(Debug, PartialEq)]
 pub struct GlmUsageSnapshot {
@@ -15,6 +18,9 @@ pub enum GlmParseError {
     InvalidJson,
     ApiRejected,
     SchemaMismatch,
+    InvalidCredential,
+    InvalidDateRange,
+    RequestFailed,
 }
 
 impl GlmParseError {
@@ -23,8 +29,113 @@ impl GlmParseError {
             Self::InvalidJson => "GLM_INVALID_JSON",
             Self::ApiRejected => "GLM_API_REJECTED",
             Self::SchemaMismatch => "GLM_SCHEMA_MISMATCH",
+            Self::InvalidCredential => "GLM_INVALID_CREDENTIAL",
+            Self::InvalidDateRange => "GLM_INVALID_DATE_RANGE",
+            Self::RequestFailed => "GLM_REQUEST_FAILED",
         }
     }
+}
+
+#[derive(Debug)]
+pub struct GlmClient {
+    client: reqwest::Client,
+    api_key: reqwest::header::HeaderValue,
+}
+
+impl GlmClient {
+    pub fn new(api_key: &str) -> Result<Self, GlmParseError> {
+        let trimmed = api_key.trim();
+        if trimmed.is_empty() || trimmed.len() > 4096 {
+            return Err(GlmParseError::InvalidCredential);
+        }
+
+        let mut header = reqwest::header::HeaderValue::from_str(trimmed)
+            .map_err(|_| GlmParseError::InvalidCredential)?;
+        header.set_sensitive(true);
+        let client = reqwest::Client::builder()
+            .https_only(true)
+            .timeout(Duration::from_secs(15))
+            .user_agent("LLMUsage/0.1")
+            .build()
+            .map_err(|_| GlmParseError::RequestFailed)?;
+
+        Ok(Self {
+            client,
+            api_key: header,
+        })
+    }
+
+    fn request(&self, path: &str) -> reqwest::RequestBuilder {
+        self.client
+            .get(format!("{GLM_BASE_URL}{path}"))
+            .header(reqwest::header::AUTHORIZATION, self.api_key.clone())
+            .header(reqwest::header::ACCEPT, "application/json")
+    }
+
+    pub fn quota_request(&self) -> Result<reqwest::Request, GlmParseError> {
+        self.request("/api/monitor/usage/quota/limit")
+            .build()
+            .map_err(|_| GlmParseError::RequestFailed)
+    }
+
+    pub fn model_usage_request(
+        &self,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<reqwest::Request, GlmParseError> {
+        if !is_monitor_datetime(start_time)
+            || !is_monitor_datetime(end_time)
+            || start_time > end_time
+        {
+            return Err(GlmParseError::InvalidDateRange);
+        }
+
+        self.request("/api/monitor/usage/model-usage")
+            .query(&[("startTime", start_time), ("endTime", end_time)])
+            .build()
+            .map_err(|_| GlmParseError::RequestFailed)
+    }
+
+    pub async fn fetch_snapshot(
+        &self,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<GlmUsageSnapshot, GlmParseError> {
+        let quota_request = self.quota_request()?;
+        let usage_request = self.model_usage_request(start_time, end_time)?;
+        let (quota, usage) = tokio::try_join!(
+            self.execute_text(quota_request),
+            self.execute_text(usage_request)
+        )?;
+        parse_snapshot(&quota, &usage)
+    }
+
+    async fn execute_text(&self, request: reqwest::Request) -> Result<String, GlmParseError> {
+        let response = self
+            .client
+            .execute(request)
+            .await
+            .map_err(|_| GlmParseError::RequestFailed)?;
+        if !response.status().is_success() {
+            return Err(GlmParseError::ApiRejected);
+        }
+        response
+            .text()
+            .await
+            .map_err(|_| GlmParseError::RequestFailed)
+    }
+}
+
+fn is_monitor_datetime(value: &str) -> bool {
+    if value.len() != 19 {
+        return false;
+    }
+    value.bytes().enumerate().all(|(index, byte)| match index {
+        4 | 7 => byte == b'-',
+        10 => byte == b' ',
+        13 | 16 => byte == b':',
+        _ => byte.is_ascii_digit(),
+    })
 }
 
 impl fmt::Display for GlmParseError {
@@ -157,5 +268,40 @@ mod tests {
             parse_snapshot(quota, usage).expect_err("schema drift must not become fake data");
 
         assert_eq!(error.code(), "GLM_SCHEMA_MISMATCH");
+    }
+
+    #[test]
+    fn builds_a_sensitive_authenticated_usage_request() {
+        let client = GlmClient::new("secret-key").expect("valid API key");
+
+        let request = client
+            .model_usage_request("2026-07-10 00:00:00", "2026-07-10 23:59:59")
+            .expect("valid date range");
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://open.bigmodel.cn/api/monitor/usage/model-usage?startTime=2026-07-10+00%3A00%3A00&endTime=2026-07-10+23%3A59%3A59"
+        );
+        assert!(request.headers()["authorization"].is_sensitive());
+        assert_eq!(request.headers()["authorization"], "secret-key");
+    }
+
+    #[test]
+    fn rejects_empty_keys_and_invalid_date_ranges() {
+        assert_eq!(
+            GlmClient::new("  ")
+                .expect_err("empty keys must fail")
+                .code(),
+            "GLM_INVALID_CREDENTIAL"
+        );
+
+        let client = GlmClient::new("secret-key").expect("valid API key");
+        assert_eq!(
+            client
+                .model_usage_request("not-a-date", "2026-07-10 23:59:59")
+                .expect_err("invalid dates must fail")
+                .code(),
+            "GLM_INVALID_DATE_RANGE"
+        );
     }
 }
