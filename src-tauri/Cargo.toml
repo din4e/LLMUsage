@@ -24,7 +24,7 @@ zeroize = "1"
 
 [profile.release]
 codegen-units = 1
-lto = true
+lto = false
 opt-level = "s"
 panic = "abort"
 strip = true

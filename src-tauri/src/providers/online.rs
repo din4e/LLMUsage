@@ -129,8 +129,9 @@ impl OnlineClient {
             return Err(OnlineError::InvalidCredential);
         }
 
-        let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {trimmed}"))
-            .map_err(|_| OnlineError::InvalidCredential)?;
+        let mut authorization =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {trimmed}"))
+                .map_err(|_| OnlineError::InvalidCredential)?;
         authorization.set_sensitive(true);
         let client = reqwest::Client::builder()
             .https_only(true)
@@ -211,7 +212,10 @@ fn parse_kimi(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, On
         provider,
         data.available_balance,
         "CNY",
-        format!("现金 ¥{:.2} · 赠金 ¥{:.2}", data.cash_balance, data.voucher_balance),
+        format!(
+            "现金 ¥{:.2} · 赠金 ¥{:.2}",
+            data.cash_balance, data.voucher_balance
+        ),
     ))
 }
 
@@ -312,7 +316,10 @@ fn balance_snapshot(
 
 fn parse_money(value: &str) -> Result<f64, OnlineError> {
     let amount: f64 = value.parse().map_err(|_| OnlineError::SchemaMismatch)?;
-    amount.is_finite().then_some(amount).ok_or(OnlineError::SchemaMismatch)
+    amount
+        .is_finite()
+        .then_some(amount)
+        .ok_or(OnlineError::SchemaMismatch)
 }
 
 fn looks_like_minimax_rejection(value: &Value) -> bool {
@@ -324,13 +331,19 @@ fn looks_like_minimax_rejection(value: &Value) -> bool {
 
 fn find_quota_pair(value: &Value) -> Option<(u64, u64)> {
     let direct = [
-        ("current_interval_usage_count", "current_interval_total_count"),
+        (
+            "current_interval_usage_count",
+            "current_interval_total_count",
+        ),
         ("current_weekly_usage_count", "current_weekly_total_count"),
         ("usage_count", "total_count"),
         ("used", "total"),
     ];
     for (used_key, total_key) in direct {
-        if let (Some(used), Some(total)) = (find_u64_key(value, used_key), find_u64_key(value, total_key)) {
+        if let (Some(used), Some(total)) = (
+            find_u64_key(value, used_key),
+            find_u64_key(value, total_key),
+        ) {
             return Some((used, total));
         }
     }

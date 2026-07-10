@@ -31,12 +31,7 @@ impl SnapshotCache {
         }
     }
 
-    pub fn save(
-        &self,
-        provider_id: &str,
-        kind: &str,
-        snapshot: Value,
-    ) -> Result<(), CacheError> {
+    pub fn save(&self, provider_id: &str, kind: &str, snapshot: Value) -> Result<(), CacheError> {
         if !is_safe_id(provider_id) || !is_safe_id(kind) {
             return Err(CacheError::Invalid);
         }
