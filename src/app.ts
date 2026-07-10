@@ -31,6 +31,13 @@ interface CommandError {
   message?: string;
 }
 
+interface CachedSnapshot {
+  providerId: string;
+  kind: "glm" | "online";
+  savedAtMs: number;
+  snapshot: unknown;
+}
+
 const providers = [
   { id: "glm", name: "智谱 GLM", configured: "has_glm_credential" },
   { id: "kimi_cn", name: "Kimi 国内" },
@@ -164,6 +171,20 @@ function providerName(providerId: string) {
   return providers.find((provider) => provider.id === providerId)?.name ?? "供应商";
 }
 
+async function loadCache() {
+  if (!isTauri()) return;
+  try {
+    const cached = await invoke<CachedSnapshot[]>("load_cached_snapshots");
+    for (const entry of cached) {
+      if (entry.kind === "glm") renderGlm(entry.snapshot as GlmSnapshot);
+      if (entry.kind === "online") renderOnline(entry.snapshot as OnlineSnapshot);
+    }
+    if (cached.length > 0) setStatus("已载入本地缓存，正在刷新");
+  } catch {
+    setStatus("本地缓存不可用", "error");
+  }
+}
+
 refreshButton?.addEventListener("click", async () => {
   refreshButton.disabled = true;
   refreshButton.textContent = "同步中…";
@@ -225,4 +246,7 @@ providerForm?.addEventListener("submit", async (event) => {
 apiKeyInput?.addEventListener("input", () => apiKeyInput.setCustomValidity(""));
 dialog?.addEventListener("close", () => { if (apiKeyInput) apiKeyInput.value = ""; });
 window.setInterval(updateCooldown, 30_000);
-void syncAll();
+void (async () => {
+  await loadCache();
+  await syncAll();
+})();

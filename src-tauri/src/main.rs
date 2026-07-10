@@ -8,7 +8,8 @@ fn main() {
             app::sync_glm,
             app::sync_online_provider,
             app::has_glm_credential,
-            app::has_online_credential
+            app::has_online_credential,
+            app::load_cached_snapshots
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LLM Usage");

@@ -1,3 +1,4 @@
+use llm_usage_core::cache::{CachedSnapshot, SnapshotCache};
 use llm_usage_core::providers::glm::{GlmClient, GlmUsageSnapshot};
 use llm_usage_core::providers::online::{OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot};
 use llm_usage_core::secret::{SecretError, SecretVault};
@@ -57,6 +58,26 @@ fn glm_vault(app: &tauri::AppHandle) -> Result<SecretVault, CommandError> {
     SecretVault::new(&app_data, "glm").map_err(|_| CommandError::credential())
 }
 
+fn snapshot_cache(app: &tauri::AppHandle) -> Result<SnapshotCache, CommandError> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::credential())?;
+    Ok(SnapshotCache::new(&app_data))
+}
+
+fn cache_snapshot<T: Serialize>(
+    app: &tauri::AppHandle,
+    provider_id: &str,
+    kind: &str,
+    snapshot: &T,
+) -> Result<(), CommandError> {
+    let value = serde_json::to_value(snapshot).map_err(|_| CommandError::credential())?;
+    snapshot_cache(app)?
+        .save(provider_id, kind, value)
+        .map_err(|_| CommandError::credential())
+}
+
 fn provider_vault(
     app: &tauri::AppHandle,
     provider: OnlineProvider,
@@ -96,6 +117,13 @@ pub fn has_online_credential(app: tauri::AppHandle, provider_id: String) -> bool
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub fn load_cached_snapshots(app: tauri::AppHandle) -> Vec<CachedSnapshot> {
+    snapshot_cache(&app)
+        .and_then(|cache| cache.load_all().map_err(|_| CommandError::credential()))
+        .unwrap_or_default()
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn configure_glm(
     app: tauri::AppHandle,
     api_key: String,
@@ -112,6 +140,7 @@ pub async fn configure_glm(
         .save(api_key.trim())
         .map_err(|_| CommandError::credential())?;
     api_key.zeroize();
+    cache_snapshot(&app, "glm", "glm", &snapshot)?;
     Ok(snapshot)
 }
 
@@ -127,10 +156,12 @@ pub async fn sync_glm(
     })?;
     let client = GlmClient::new(&api_key).map_err(|_| CommandError::provider())?;
     api_key.zeroize();
-    client
+    let snapshot = client
         .fetch_snapshot(&start_time, &end_time)
         .await
-        .map_err(|_| CommandError::provider())
+        .map_err(|_| CommandError::provider())?;
+    cache_snapshot(&app, "glm", "glm", &snapshot)?;
+    Ok(snapshot)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -147,6 +178,7 @@ pub async fn configure_online_provider(
         .save(api_key.trim())
         .map_err(|_| CommandError::credential())?;
     api_key.zeroize();
+    cache_snapshot(&app, provider.id(), "online", &snapshot)?;
     Ok(snapshot)
 }
 
@@ -164,5 +196,7 @@ pub async fn sync_online_provider(
         })?;
     let client = OnlineClient::new(provider, &api_key).map_err(online_error)?;
     api_key.zeroize();
-    client.fetch_snapshot().await.map_err(online_error)
+    let snapshot = client.fetch_snapshot().await.map_err(online_error)?;
+    cache_snapshot(&app, provider.id(), "online", &snapshot)?;
+    Ok(snapshot)
 }
