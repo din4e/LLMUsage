@@ -6,6 +6,7 @@ import {
   formatInteger,
   formatQuotaDetailValue,
   localDayRange,
+  localDayRangeMs,
   summarizeProviders,
 } from "./domain";
 
@@ -45,6 +46,14 @@ describe("localDayRange", () => {
     expect(localDayRange(new Date(2026, 6, 10, 14, 30))).toEqual({
       startTime: "2026-07-10 00:00:00",
       endTime: "2026-07-10 23:59:59",
+    });
+  });
+
+  it("returns exact local midnight boundaries for online analytics", () => {
+    const date = new Date(2026, 6, 10, 14, 30);
+    expect(localDayRangeMs(date)).toEqual({
+      startTimeMs: new Date(2026, 6, 10).getTime(),
+      endTimeMs: new Date(2026, 6, 11).getTime(),
     });
   });
 });

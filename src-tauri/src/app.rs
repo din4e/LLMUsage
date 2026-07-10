@@ -1,7 +1,7 @@
 use llm_usage_core::cache::{CachedSnapshot, SnapshotCache};
 use llm_usage_core::providers::glm::{GlmClient, GlmUsageSnapshot};
 use llm_usage_core::providers::online::{
-    OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot,
+    OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot, OnlineUsageRange,
 };
 use llm_usage_core::secret::{SecretError, SecretVault};
 use serde::Serialize;
@@ -64,6 +64,35 @@ impl CommandError {
             message: "MiniMax Token Plan 同步失败：请使用订阅 Key，不能使用按量付费 API Key",
         }
     }
+
+    fn openai_admin_provider() -> Self {
+        Self {
+            code: "OPENAI_ADMIN_SYNC_FAILED",
+            message: "OpenAI / Codex API 同步失败：需要 Organization Admin API Key；该数据不包含个人 ChatGPT 套餐剩余额度",
+        }
+    }
+
+    fn claude_code_admin_provider() -> Self {
+        Self {
+            code: "CLAUDE_CODE_ADMIN_SYNC_FAILED",
+            message:
+                "Claude Code 同步失败：需要组织 Admin API Key；个人 Pro/Max 套餐没有公开统计 API",
+        }
+    }
+
+    fn gemini_monitoring_provider() -> Self {
+        Self {
+            code: "GEMINI_MONITORING_SYNC_FAILED",
+            message: "Gemini 同步失败：请检查 Google Cloud Project ID、Monitoring Viewer 权限和未过期的 OAuth Access Token",
+        }
+    }
+
+    fn qwen_monitoring_provider() -> Self {
+        Self {
+            code: "QWEN_MONITORING_SYNC_FAILED",
+            message: "Qwen 同步失败：请使用百炼高级监控的 Prometheus 公网地址与 AccessKey；Coding Plan Key 不支持自动查询",
+        }
+    }
 }
 
 fn glm_vault(app: &tauri::AppHandle) -> Result<SecretVault, CommandError> {
@@ -112,6 +141,23 @@ fn online_provider(provider_id: &str) -> Result<OnlineProvider, CommandError> {
 fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
     match error {
         OnlineError::InvalidProvider => CommandError::invalid_provider(),
+        OnlineError::InvalidCredential if provider == OnlineProvider::OpenAiCodex => {
+            CommandError::openai_admin_provider()
+        }
+        OnlineError::InvalidCredential if provider == OnlineProvider::ClaudeCode => {
+            CommandError::claude_code_admin_provider()
+        }
+        OnlineError::InvalidCredential if provider == OnlineProvider::Gemini => {
+            CommandError::gemini_monitoring_provider()
+        }
+        OnlineError::InvalidCredential
+            if matches!(
+                provider,
+                OnlineProvider::QwenCn | OnlineProvider::QwenGlobal
+            ) =>
+        {
+            CommandError::qwen_monitoring_provider()
+        }
         OnlineError::InvalidCredential => CommandError::online_provider(),
         OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
             if provider == OnlineProvider::KimiCn =>
@@ -125,6 +171,29 @@ fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
             ) =>
         {
             CommandError::minimax_token_plan_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::OpenAiCodex =>
+        {
+            CommandError::openai_admin_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::ClaudeCode =>
+        {
+            CommandError::claude_code_admin_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::Gemini =>
+        {
+            CommandError::gemini_monitoring_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if matches!(
+                provider,
+                OnlineProvider::QwenCn | OnlineProvider::QwenGlobal
+            ) =>
+        {
+            CommandError::qwen_monitoring_provider()
         }
         OnlineError::InvalidJson
         | OnlineError::ApiRejected
@@ -213,8 +282,12 @@ pub async fn configure_online_provider(
     app: tauri::AppHandle,
     provider_id: String,
     api_key: String,
+    start_time_ms: i64,
+    end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
     let provider = online_provider(&provider_id)?;
+    let range = OnlineUsageRange::new(start_time_ms, end_time_ms)
+        .map_err(|error| online_error(provider, error))?;
     let mut api_key = api_key;
     let client = match OnlineClient::new(provider, &api_key) {
         Ok(client) => client,
@@ -223,7 +296,7 @@ pub async fn configure_online_provider(
             return Err(online_error(provider, error));
         }
     };
-    let snapshot = match client.fetch_snapshot().await {
+    let snapshot = match client.fetch_snapshot_for_range(range).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             api_key.zeroize();
@@ -246,8 +319,12 @@ pub async fn configure_online_provider(
 pub async fn sync_online_provider(
     app: tauri::AppHandle,
     provider_id: String,
+    start_time_ms: i64,
+    end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
     let provider = online_provider(&provider_id)?;
+    let range = OnlineUsageRange::new(start_time_ms, end_time_ms)
+        .map_err(|error| online_error(provider, error))?;
     let mut api_key = provider_vault(&app, provider)?
         .load()
         .map_err(|error| match error {
@@ -263,7 +340,7 @@ pub async fn sync_online_provider(
     };
     api_key.zeroize();
     let snapshot = client
-        .fetch_snapshot()
+        .fetch_snapshot_for_range(range)
         .await
         .map_err(|error| online_error(provider, error))?;
     cache_snapshot(&app, provider.id(), "online", &snapshot)?;
@@ -285,5 +362,24 @@ mod tests {
         assert_eq!(minimax.code, "MINIMAX_TOKEN_PLAN_SYNC_FAILED");
         assert!(minimax.message.contains("订阅 Key"));
         assert!(minimax.message.contains("按量付费"));
+    }
+
+    #[test]
+    fn explains_admin_and_monitoring_credentials_for_analytics_providers() {
+        let openai = online_error(OnlineProvider::OpenAiCodex, OnlineError::ApiRejected);
+        assert!(openai.message.contains("Admin API Key"));
+        assert!(openai.message.contains("ChatGPT"));
+
+        let claude = online_error(OnlineProvider::ClaudeCode, OnlineError::ApiRejected);
+        assert!(claude.message.contains("Admin API Key"));
+        assert!(claude.message.contains("个人"));
+
+        let gemini = online_error(OnlineProvider::Gemini, OnlineError::ApiRejected);
+        assert!(gemini.message.contains("OAuth"));
+        assert!(gemini.message.contains("Project ID"));
+
+        let qwen = online_error(OnlineProvider::QwenCn, OnlineError::ApiRejected);
+        assert!(qwen.message.contains("Prometheus"));
+        assert!(qwen.message.contains("Coding Plan"));
     }
 }

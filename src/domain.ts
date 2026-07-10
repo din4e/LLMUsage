@@ -30,6 +30,12 @@ export function localDayRange(date = new Date()): { startTime: string; endTime: 
   return { startTime: `${prefix} 00:00:00`, endTime: `${prefix} 23:59:59` };
 }
 
+export function localDayRangeMs(date = new Date()): { startTimeMs: number; endTimeMs: number } {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+  return { startTimeMs: start.getTime(), endTimeMs: end.getTime() };
+}
+
 export function formatCooldown(resetAtMs: number, nowMs = Date.now()): string {
   const remainingSeconds = Math.max(0, Math.floor((resetAtMs - nowMs) / 1_000));
   if (remainingSeconds < 60) return "即将恢复";

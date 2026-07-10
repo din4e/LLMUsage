@@ -4,6 +4,7 @@ import {
   formatCooldown,
   formatInteger,
   localDayRange,
+  localDayRangeMs,
   summarizeProviders,
   type OnlineDetailSection,
 } from "./domain";
@@ -245,6 +246,10 @@ function renderOnline(snapshot: OnlineSnapshot) {
 function sourceLabel(snapshot: OnlineSnapshot) {
   if (snapshot.experimental) return "实验接口 · 可能随平台变化";
   if (snapshot.source === "official_balance") return "官方余额接口";
+  if (snapshot.source === "official_organization_usage") return "OpenAI 官方组织用量";
+  if (snapshot.source === "official_claude_code_analytics") return "Claude Code 官方日汇总";
+  if (snapshot.source === "official_cloud_monitoring") return "Google Cloud Monitoring";
+  if (snapshot.source === "official_prometheus_monitoring") return "百炼 Prometheus 监控";
   return "在线接口";
 }
 
@@ -297,7 +302,10 @@ async function syncGlm() {
 async function syncOnline(providerId: string) {
   if (!isTauri()) return;
   try {
-    renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", { providerId }));
+    renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", {
+      providerId,
+      ...localDayRangeMs(),
+    }));
   } catch (reason) {
     const error = reason as CommandError;
     setStatus(`${providerName(providerId)}：${error.message ?? "同步失败"}`, "error");
@@ -458,6 +466,7 @@ providerForm?.addEventListener("submit", async (event) => {
       const snapshot = await invoke<OnlineSnapshot>("configure_online_provider", {
         providerId: selectedProvider,
         apiKey: credential,
+        ...localDayRangeMs(),
       });
       renderOnline(snapshot);
       setStatus(`${snapshot.label} 已完成在线同步`);

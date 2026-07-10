@@ -96,7 +96,7 @@ function appendValue(root: HTMLDListElement, label: string, value: string | null
 
 function detailMetadata(entry: OnlineDetailEntry): string[] {
   const values: string[] = [];
-  if (entry.window) values.push(`窗口 ${entry.window}`);
+  if (entry.window) values.push(entry.window);
   if (validTimestamp(entry.startAtMs)) values.push(`开始 ${formatLocalTime(entry.startAtMs)}`);
   if (validTimestamp(entry.resetAtMs)) values.push(`重置 ${formatLocalTime(entry.resetAtMs)}`);
   if (entry.remainingMs != null && Number.isFinite(entry.remainingMs) && entry.remainingMs >= 0) {

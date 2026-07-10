@@ -1,7 +1,9 @@
-use chrono::DateTime;
+use chrono::{DateTime, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Duration;
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnlineProvider {
@@ -13,6 +15,11 @@ pub enum OnlineProvider {
     SiliconFlowCn,
     SiliconFlowGlobal,
     OpenRouter,
+    OpenAiCodex,
+    ClaudeCode,
+    Gemini,
+    QwenCn,
+    QwenGlobal,
 }
 
 impl OnlineProvider {
@@ -26,6 +33,11 @@ impl OnlineProvider {
             "siliconflow_cn" => Some(Self::SiliconFlowCn),
             "siliconflow_global" => Some(Self::SiliconFlowGlobal),
             "openrouter" => Some(Self::OpenRouter),
+            "openai_codex" => Some(Self::OpenAiCodex),
+            "claude_code" => Some(Self::ClaudeCode),
+            "gemini" => Some(Self::Gemini),
+            "qwen_cn" => Some(Self::QwenCn),
+            "qwen_global" => Some(Self::QwenGlobal),
             _ => None,
         }
     }
@@ -40,6 +52,11 @@ impl OnlineProvider {
             Self::SiliconFlowCn => "siliconflow_cn",
             Self::SiliconFlowGlobal => "siliconflow_global",
             Self::OpenRouter => "openrouter",
+            Self::OpenAiCodex => "openai_codex",
+            Self::ClaudeCode => "claude_code",
+            Self::Gemini => "gemini",
+            Self::QwenCn => "qwen_cn",
+            Self::QwenGlobal => "qwen_global",
         }
     }
 
@@ -53,6 +70,11 @@ impl OnlineProvider {
             Self::SiliconFlowCn => "硅基流动",
             Self::SiliconFlowGlobal => "SiliconFlow Global",
             Self::OpenRouter => "OpenRouter",
+            Self::OpenAiCodex => "OpenAI / Codex API",
+            Self::ClaudeCode => "Claude Code",
+            Self::Gemini => "Gemini Code Assist",
+            Self::QwenCn => "Qwen / 百炼国内",
+            Self::QwenGlobal => "Qwen / Model Studio Global",
         }
     }
 
@@ -75,6 +97,14 @@ impl OnlineProvider {
             Self::SiliconFlowCn => &["https://api.siliconflow.cn/v1/user/info"],
             Self::SiliconFlowGlobal => &["https://api.siliconflow.com/v1/user/info"],
             Self::OpenRouter => &["https://openrouter.ai/api/v1/credits"],
+            Self::OpenAiCodex => &[
+                "https://api.openai.com/v1/organization/usage/completions",
+                "https://api.openai.com/v1/organization/costs",
+            ],
+            Self::ClaudeCode => {
+                &["https://api.anthropic.com/v1/organizations/usage_report/claude_code"]
+            }
+            Self::Gemini | Self::QwenCn | Self::QwenGlobal => &[],
         }
     }
 
@@ -86,6 +116,10 @@ impl OnlineProvider {
             Self::SiliconFlowCn | Self::SiliconFlowGlobal => "official_balance",
             Self::OpenRouter => "official_credits",
             Self::MiniMaxCn | Self::MiniMaxGlobal => "experimental_token_plan",
+            Self::OpenAiCodex => "official_organization_usage",
+            Self::ClaudeCode => "official_claude_code_analytics",
+            Self::Gemini => "official_cloud_monitoring",
+            Self::QwenCn | Self::QwenGlobal => "official_prometheus_monitoring",
         }
     }
 
@@ -171,7 +205,68 @@ pub struct OnlineClient {
     provider: OnlineProvider,
     client: reqwest::Client,
     authorization: reqwest::header::HeaderValue,
+    api_key: reqwest::header::HeaderValue,
+    analytics_credential: Option<AnalyticsCredential>,
     kimi_code_credential: bool,
+}
+
+#[derive(Debug)]
+enum AnalyticsCredential {
+    Gemini { project_id: String },
+    Qwen { endpoint: reqwest::Url },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GeminiCredential {
+    project_id: String,
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QwenCredential {
+    endpoint: String,
+    access_key_id: String,
+    access_key_secret: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OnlineUsageRange {
+    start_time_ms: i64,
+    end_time_ms: i64,
+}
+
+impl OnlineUsageRange {
+    pub fn new(start_time_ms: i64, end_time_ms: i64) -> Result<Self, OnlineError> {
+        const MAX_RANGE_MS: i64 = 31 * 86_400_000;
+        if start_time_ms <= 0
+            || end_time_ms <= start_time_ms
+            || end_time_ms - start_time_ms > MAX_RANGE_MS
+        {
+            return Err(OnlineError::InvalidCredential);
+        }
+        Ok(Self {
+            start_time_ms,
+            end_time_ms,
+        })
+    }
+
+    fn current_utc_day() -> Result<Self, OnlineError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| OnlineError::RequestFailed)?
+            .as_millis();
+        let now_ms = i64::try_from(now_ms).map_err(|_| OnlineError::RequestFailed)?;
+        let start_time_ms = now_ms - now_ms.rem_euclid(86_400_000);
+        Self::new(start_time_ms, start_time_ms + 86_400_000)
+    }
+
+    fn utc_date(self) -> Result<String, OnlineError> {
+        DateTime::from_timestamp_millis(self.end_time_ms - 1)
+            .map(|date| date.format("%Y-%m-%d").to_string())
+            .ok_or(OnlineError::InvalidCredential)
+    }
 }
 
 impl OnlineClient {
@@ -180,23 +275,110 @@ impl OnlineClient {
         if trimmed.is_empty() || trimmed.len() > 4096 {
             return Err(OnlineError::InvalidCredential);
         }
-
-        let mut authorization =
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {trimmed}"))
-                .map_err(|_| OnlineError::InvalidCredential)?;
-        authorization.set_sensitive(true);
         let client = reqwest::Client::builder()
             .https_only(true)
             .timeout(Duration::from_secs(15))
             .user_agent("LLMUsage/0.1")
             .build()
             .map_err(|_| OnlineError::RequestFailed)?;
+        let (authorization, api_key, analytics_credential, kimi_code_credential) = match provider {
+            OnlineProvider::Gemini => {
+                let mut credential: GeminiCredential =
+                    serde_json::from_str(trimmed).map_err(|_| OnlineError::InvalidCredential)?;
+                if !valid_google_project_id(&credential.project_id)
+                    || credential.access_token.is_empty()
+                    || credential.access_token.len() > 3072
+                {
+                    credential.access_token.zeroize();
+                    return Err(OnlineError::InvalidCredential);
+                }
+                let authorization = match sensitive_bearer_header(&credential.access_token) {
+                    Ok(header) => header,
+                    Err(error) => {
+                        credential.access_token.zeroize();
+                        return Err(error);
+                    }
+                };
+                let api_key = sensitive_header("unused")?;
+                credential.access_token.zeroize();
+                (
+                    authorization,
+                    api_key,
+                    Some(AnalyticsCredential::Gemini {
+                        project_id: credential.project_id,
+                    }),
+                    false,
+                )
+            }
+            OnlineProvider::QwenCn | OnlineProvider::QwenGlobal => {
+                let mut credential: QwenCredential =
+                    serde_json::from_str(trimmed).map_err(|_| OnlineError::InvalidCredential)?;
+                let endpoint = match validate_qwen_endpoint(&credential.endpoint) {
+                    Ok(endpoint) => endpoint,
+                    Err(error) => {
+                        credential.access_key_id.zeroize();
+                        credential.access_key_secret.zeroize();
+                        return Err(error);
+                    }
+                };
+                if credential.access_key_id.is_empty()
+                    || credential.access_key_id.len() > 256
+                    || credential.access_key_secret.is_empty()
+                    || credential.access_key_secret.len() > 1024
+                {
+                    credential.access_key_id.zeroize();
+                    credential.access_key_secret.zeroize();
+                    return Err(OnlineError::InvalidCredential);
+                }
+                let probe = match client
+                    .get(endpoint.clone())
+                    .basic_auth(
+                        &credential.access_key_id,
+                        Some(&credential.access_key_secret),
+                    )
+                    .build()
+                {
+                    Ok(request) => request,
+                    Err(_) => {
+                        credential.access_key_id.zeroize();
+                        credential.access_key_secret.zeroize();
+                        return Err(OnlineError::InvalidCredential);
+                    }
+                };
+                let mut authorization =
+                    match probe.headers().get(reqwest::header::AUTHORIZATION).cloned() {
+                        Some(header) => header,
+                        None => {
+                            credential.access_key_id.zeroize();
+                            credential.access_key_secret.zeroize();
+                            return Err(OnlineError::InvalidCredential);
+                        }
+                    };
+                authorization.set_sensitive(true);
+                credential.access_key_id.zeroize();
+                credential.access_key_secret.zeroize();
+                (
+                    authorization,
+                    sensitive_header("unused")?,
+                    Some(AnalyticsCredential::Qwen { endpoint }),
+                    false,
+                )
+            }
+            _ => (
+                sensitive_bearer_header(trimmed)?,
+                sensitive_header(trimmed)?,
+                None,
+                trimmed.starts_with("sk-kimi-"),
+            ),
+        };
 
         Ok(Self {
             provider,
             client,
             authorization,
-            kimi_code_credential: trimmed.starts_with("sk-kimi-"),
+            api_key,
+            analytics_credential,
+            kimi_code_credential,
         })
     }
 
@@ -238,6 +420,23 @@ impl OnlineClient {
     }
 
     pub async fn fetch_snapshot(&self) -> Result<OnlineSnapshot, OnlineError> {
+        self.fetch_snapshot_for_range(OnlineUsageRange::current_utc_day()?)
+            .await
+    }
+
+    pub async fn fetch_snapshot_for_range(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        match self.provider {
+            OnlineProvider::OpenAiCodex => return self.fetch_openai_analytics(range).await,
+            OnlineProvider::ClaudeCode => return self.fetch_claude_code_analytics(range).await,
+            OnlineProvider::Gemini => return self.fetch_gemini_analytics(range).await,
+            OnlineProvider::QwenCn | OnlineProvider::QwenGlobal => {
+                return self.fetch_qwen_analytics(range).await;
+            }
+            _ => {}
+        }
         let mut last_error = OnlineError::RequestFailed;
         for request in self.requests()? {
             let response = match self.client.execute(request).await {
@@ -265,6 +464,263 @@ impl OnlineClient {
         }
         Err(last_error)
     }
+
+    async fn fetch_openai_analytics(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        let start_time = range.start_time_ms / 1_000;
+        let end_time = range.end_time_ms / 1_000;
+        let mut usage_url = reqwest::Url::parse(self.provider.endpoints()[0])
+            .map_err(|_| OnlineError::RequestFailed)?;
+        usage_url
+            .query_pairs_mut()
+            .append_pair("start_time", &start_time.to_string())
+            .append_pair("end_time", &end_time.to_string())
+            .append_pair("bucket_width", "1d")
+            .append_pair("group_by[]", "model")
+            .append_pair("limit", "31");
+        let mut cost_url = reqwest::Url::parse(self.provider.endpoints()[1])
+            .map_err(|_| OnlineError::RequestFailed)?;
+        cost_url
+            .query_pairs_mut()
+            .append_pair("start_time", &start_time.to_string())
+            .append_pair("end_time", &end_time.to_string())
+            .append_pair("bucket_width", "1d")
+            .append_pair("group_by[]", "line_item")
+            .append_pair("limit", "31");
+        let usage = self.fetch_bearer_json(usage_url).await?;
+        let costs = self.fetch_bearer_json(cost_url).await?;
+        let rate = self.fetch_usd_cny_rate().await;
+        parse_openai_analytics(&usage, &costs, rate)
+    }
+
+    async fn fetch_claude_code_analytics(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        let mut url = reqwest::Url::parse(self.provider.endpoints()[0])
+            .map_err(|_| OnlineError::RequestFailed)?;
+        url.query_pairs_mut()
+            .append_pair("starting_at", &range.utc_date()?)
+            .append_pair("limit", "1000");
+        let request = self
+            .client
+            .get(url)
+            .header("x-api-key", self.api_key.clone())
+            .header("anthropic-version", "2023-06-01")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)?;
+        let json = self.execute_json(request).await?;
+        let rate = self.fetch_usd_cny_rate().await;
+        parse_claude_code_analytics(&json, rate)
+    }
+
+    async fn fetch_gemini_analytics(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        let calls = self
+            .execute_json(self.gemini_metric_request(range, "code_assist/api_calls_count")?)
+            .await?;
+        let tokens = self
+            .execute_json(self.gemini_metric_request(range, "code_assist/used_tokens_count")?)
+            .await?;
+        parse_gemini_analytics(&calls, &tokens)
+    }
+
+    fn gemini_metric_request(
+        &self,
+        range: OnlineUsageRange,
+        metric: &str,
+    ) -> Result<reqwest::Request, OnlineError> {
+        if !matches!(
+            metric,
+            "code_assist/api_calls_count" | "code_assist/used_tokens_count"
+        ) {
+            return Err(OnlineError::InvalidProvider);
+        }
+        let AnalyticsCredential::Gemini { project_id } = self
+            .analytics_credential
+            .as_ref()
+            .ok_or(OnlineError::InvalidCredential)?
+        else {
+            return Err(OnlineError::InvalidCredential);
+        };
+        let mut url = reqwest::Url::parse("https://monitoring.googleapis.com/v3/projects/")
+            .map_err(|_| OnlineError::RequestFailed)?;
+        url.path_segments_mut()
+            .map_err(|_| OnlineError::RequestFailed)?
+            .push(project_id)
+            .push("timeSeries");
+        let start = rfc3339_millis(range.start_time_ms)?;
+        let end = rfc3339_millis(range.end_time_ms)?;
+        let alignment_seconds = ((range.end_time_ms - range.start_time_ms) / 1_000).max(60);
+        url.query_pairs_mut()
+            .append_pair("filter", &format!("metric.type = \"{metric}\""))
+            .append_pair("interval.startTime", &start)
+            .append_pair("interval.endTime", &end)
+            .append_pair(
+                "aggregation.alignmentPeriod",
+                &format!("{alignment_seconds}s"),
+            )
+            .append_pair("aggregation.perSeriesAligner", "ALIGN_SUM")
+            .append_pair("aggregation.crossSeriesReducer", "REDUCE_SUM")
+            .append_pair("view", "FULL")
+            .append_pair("pageSize", "1000");
+        self.client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    async fn fetch_qwen_analytics(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        let calls = self
+            .execute_json(self.qwen_metric_request(range, "model_call_count")?)
+            .await?;
+        let tokens = self
+            .execute_json(self.qwen_metric_request(range, "model_usage")?)
+            .await?;
+        parse_qwen_analytics(self.provider, &calls, &tokens)
+    }
+
+    fn qwen_metric_request(
+        &self,
+        range: OnlineUsageRange,
+        metric: &str,
+    ) -> Result<reqwest::Request, OnlineError> {
+        if !matches!(metric, "model_call_count" | "model_usage") {
+            return Err(OnlineError::InvalidProvider);
+        }
+        let AnalyticsCredential::Qwen { endpoint } = self
+            .analytics_credential
+            .as_ref()
+            .ok_or(OnlineError::InvalidCredential)?
+        else {
+            return Err(OnlineError::InvalidCredential);
+        };
+        let mut url = endpoint.clone();
+        let base_path = url.path().trim_end_matches('/');
+        url.set_path(&format!("{base_path}/api/v1/query_range"));
+        url.set_query(None);
+        url.query_pairs_mut()
+            .append_pair("query", &format!("sum by (model) ({metric})"))
+            .append_pair("start", &rfc3339_millis(range.start_time_ms)?)
+            .append_pair("end", &rfc3339_millis(range.end_time_ms)?)
+            .append_pair("step", "3600s");
+        self.client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    async fn fetch_bearer_json(&self, url: reqwest::Url) -> Result<String, OnlineError> {
+        let request = self
+            .client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)?;
+        self.execute_json(request).await
+    }
+
+    async fn execute_json(&self, request: reqwest::Request) -> Result<String, OnlineError> {
+        let response = self
+            .client
+            .execute(request)
+            .await
+            .map_err(|_| OnlineError::RequestFailed)?;
+        if !response.status().is_success() {
+            return Err(OnlineError::ApiRejected);
+        }
+        response
+            .text()
+            .await
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    async fn fetch_usd_cny_rate(&self) -> Option<f64> {
+        let response = self
+            .client
+            .get("https://api.frankfurter.app/latest?from=USD&to=CNY")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let value: Value = response.json().await.ok()?;
+        value
+            .get("rates")
+            .and_then(|rates| rates.get("CNY"))
+            .and_then(number_like_f64)
+            .filter(|rate| rate.is_finite() && (1.0..=20.0).contains(rate))
+    }
+}
+
+fn sensitive_header(value: &str) -> Result<reqwest::header::HeaderValue, OnlineError> {
+    let mut header = reqwest::header::HeaderValue::from_str(value)
+        .map_err(|_| OnlineError::InvalidCredential)?;
+    header.set_sensitive(true);
+    Ok(header)
+}
+
+fn sensitive_bearer_header(value: &str) -> Result<reqwest::header::HeaderValue, OnlineError> {
+    let mut bearer = format!("Bearer {value}");
+    let result = sensitive_header(&bearer);
+    bearer.zeroize();
+    result
+}
+
+fn valid_google_project_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (6..=63).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_lowercase)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+fn validate_qwen_endpoint(value: &str) -> Result<reqwest::Url, OnlineError> {
+    let mut endpoint =
+        reqwest::Url::parse(value.trim()).map_err(|_| OnlineError::InvalidCredential)?;
+    let host = endpoint
+        .host_str()
+        .map(str::to_ascii_lowercase)
+        .ok_or(OnlineError::InvalidCredential)?;
+    let allowed_host = host == "aliyuncs.com"
+        || host.ends_with(".aliyuncs.com")
+        || host == "alibabacloud.com"
+        || host.ends_with(".alibabacloud.com");
+    if endpoint.scheme() != "https"
+        || !allowed_host
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(OnlineError::InvalidCredential);
+    }
+    let normalized_path = endpoint.path().trim_end_matches('/').to_string();
+    endpoint.set_path(&normalized_path);
+    Ok(endpoint)
+}
+
+fn rfc3339_millis(value: i64) -> Result<String, OnlineError> {
+    DateTime::from_timestamp_millis(value)
+        .map(|date| date.to_rfc3339_opts(SecondsFormat::Secs, true))
+        .ok_or(OnlineError::InvalidCredential)
 }
 
 pub fn parse_snapshot(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, OnlineError> {
@@ -279,6 +735,11 @@ pub fn parse_snapshot(provider: OnlineProvider, json: &str) -> Result<OnlineSnap
             parse_siliconflow(provider, json)
         }
         OnlineProvider::OpenRouter => parse_openrouter(provider, json),
+        OnlineProvider::ClaudeCode => parse_claude_code_analytics(json, None),
+        OnlineProvider::OpenAiCodex
+        | OnlineProvider::Gemini
+        | OnlineProvider::QwenCn
+        | OnlineProvider::QwenGlobal => Err(OnlineError::SchemaMismatch),
     }
 }
 
@@ -734,6 +1195,586 @@ fn parse_openrouter(provider: OnlineProvider, json: &str) -> Result<OnlineSnapsh
     ))
 }
 
+fn parse_openai_analytics(
+    usage_json: &str,
+    costs_json: &str,
+    usd_cny_rate: Option<f64>,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let usage: Value = serde_json::from_str(usage_json).map_err(|_| OnlineError::InvalidJson)?;
+    let costs: Value = serde_json::from_str(costs_json).map_err(|_| OnlineError::InvalidJson)?;
+    let usage_buckets = usage
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let cost_buckets = costs
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or(OnlineError::SchemaMismatch)?;
+
+    let mut requests = 0_u64;
+    let mut total_tokens = 0_u64;
+    let mut models = BTreeMap::<String, OpenAiModelUsage>::new();
+    for bucket in usage_buckets {
+        let results = bucket
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or(OnlineError::SchemaMismatch)?;
+        for result in results {
+            let input = analytics_u64(result, "input_tokens")?;
+            let output = analytics_u64(result, "output_tokens")?;
+            let cached = analytics_u64_optional(result, "input_cached_tokens")?;
+            let model_requests = analytics_u64(result, "num_model_requests")?;
+            requests = requests
+                .checked_add(model_requests)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            total_tokens = total_tokens
+                .checked_add(input)
+                .and_then(|value| value.checked_add(output))
+                .ok_or(OnlineError::SchemaMismatch)?;
+            let model = analytics_label(result.get("model").and_then(Value::as_str), "未分组模型");
+            let usage = models.entry(model).or_default();
+            usage.input = usage
+                .input
+                .checked_add(input)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usage.output = usage
+                .output
+                .checked_add(output)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usage.cached = usage
+                .cached
+                .checked_add(cached)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usage.requests = usage
+                .requests
+                .checked_add(model_requests)
+                .ok_or(OnlineError::SchemaMismatch)?;
+        }
+    }
+
+    let mut usd_cost = 0.0_f64;
+    let mut cost_entries = Vec::new();
+    for bucket in cost_buckets {
+        let results = bucket
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or(OnlineError::SchemaMismatch)?;
+        for result in results {
+            let amount = result
+                .get("amount")
+                .and_then(Value::as_object)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            let value = amount
+                .get("value")
+                .and_then(number_like_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            amount
+                .get("currency")
+                .and_then(Value::as_str)
+                .filter(|currency| currency.eq_ignore_ascii_case("usd"))
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usd_cost += value;
+            if !usd_cost.is_finite() {
+                return Err(OnlineError::SchemaMismatch);
+            }
+            cost_entries.push(OnlineDetailEntry {
+                label: analytics_label(
+                    result.get("line_item").and_then(Value::as_str),
+                    "未分组成本",
+                ),
+                used: Some(format_detail_number(value)),
+                remaining: None,
+                limit: None,
+                unit: " USD".to_string(),
+                used_percent: None,
+                window: Some("官方组织成本".to_string()),
+                start_at_ms: None,
+                reset_at_ms: None,
+                remaining_ms: None,
+            });
+        }
+    }
+
+    let model_entries = models
+        .into_iter()
+        .take(MAX_DETAIL_ENTRIES)
+        .map(|(model, usage)| OnlineDetailEntry {
+            label: model,
+            used: Some((usage.input + usage.output).to_string()),
+            remaining: None,
+            limit: None,
+            unit: " Token".to_string(),
+            used_percent: None,
+            window: Some(format!(
+                "输入 {} · 输出 {} · 缓存输入 {} · 请求 {}",
+                usage.input, usage.output, usage.cached, usage.requests
+            )),
+            start_at_ms: None,
+            reset_at_ms: None,
+            remaining_ms: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut detail_sections = vec![OnlineDetailSection {
+        title: "模型用量".to_string(),
+        entries: model_entries,
+    }];
+    if !cost_entries.is_empty() {
+        detail_sections.push(OnlineDetailSection {
+            title: "成本".to_string(),
+            entries: cost_entries,
+        });
+    }
+    Ok(OnlineSnapshot {
+        provider_id: OnlineProvider::OpenAiCodex.id().to_string(),
+        label: OnlineProvider::OpenAiCodex.label().to_string(),
+        source: OnlineProvider::OpenAiCodex.source().to_string(),
+        experimental: false,
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: None,
+        cooldown_ends_at_ms: None,
+        requests: Some(requests),
+        total_tokens: Some(total_tokens),
+        estimated_cost_cny: converted_cny(usd_cost, usd_cny_rate),
+        primary_label: "今日 API 成本".to_string(),
+        primary_value: format!("${usd_cost:.2}"),
+        secondary_value: format!(
+            "API 组织 · {requests} 次请求 · {total_tokens} Token · 非 ChatGPT 套餐"
+        ),
+        detail_sections,
+    })
+}
+
+#[derive(Default)]
+struct OpenAiModelUsage {
+    input: u64,
+    output: u64,
+    cached: u64,
+    requests: u64,
+}
+
+fn parse_claude_code_analytics(
+    json: &str,
+    usd_cny_rate: Option<f64>,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let value: Value = serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    let records = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let mut sessions = 0_u64;
+    let mut added = 0_u64;
+    let mut removed = 0_u64;
+    let mut commits = 0_u64;
+    let mut pull_requests = 0_u64;
+    let mut total_tokens = 0_u64;
+    let mut cost_cents = 0.0_f64;
+    let mut models = BTreeMap::<String, ClaudeModelUsage>::new();
+
+    for record in records {
+        let core = record
+            .get("core_metrics")
+            .ok_or(OnlineError::SchemaMismatch)?;
+        sessions = checked_analytics_add(sessions, analytics_u64(core, "num_sessions")?)?;
+        let lines = core.get("lines_of_code").unwrap_or(&Value::Null);
+        added = checked_analytics_add(added, analytics_u64_optional(lines, "added")?)?;
+        removed = checked_analytics_add(removed, analytics_u64_optional(lines, "removed")?)?;
+        commits = checked_analytics_add(
+            commits,
+            analytics_u64_optional(core, "commits_by_claude_code")?,
+        )?;
+        pull_requests = checked_analytics_add(
+            pull_requests,
+            analytics_u64_optional(core, "pull_requests_by_claude_code")?,
+        )?;
+        let breakdown = record
+            .get("model_breakdown")
+            .and_then(Value::as_array)
+            .ok_or(OnlineError::SchemaMismatch)?;
+        for item in breakdown {
+            let model = analytics_label(item.get("model").and_then(Value::as_str), "未分组模型");
+            let tokens = item.get("tokens").ok_or(OnlineError::SchemaMismatch)?;
+            let input = analytics_u64(tokens, "input")?;
+            let output = analytics_u64(tokens, "output")?;
+            let cache_read = analytics_u64_optional(tokens, "cache_read")?;
+            let cache_creation = analytics_u64_optional(tokens, "cache_creation")?;
+            let item_total = [input, output, cache_read, cache_creation]
+                .into_iter()
+                .try_fold(0_u64, checked_analytics_add)?;
+            total_tokens = checked_analytics_add(total_tokens, item_total)?;
+            let estimated = item
+                .get("estimated_cost")
+                .and_then(Value::as_object)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            estimated
+                .get("currency")
+                .and_then(Value::as_str)
+                .filter(|currency| currency.eq_ignore_ascii_case("USD"))
+                .ok_or(OnlineError::SchemaMismatch)?;
+            let cents = estimated
+                .get("amount")
+                .and_then(number_like_f64)
+                .filter(|amount| amount.is_finite() && *amount >= 0.0)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            cost_cents += cents;
+            if !cost_cents.is_finite() {
+                return Err(OnlineError::SchemaMismatch);
+            }
+            let usage = models.entry(model).or_default();
+            usage.input = checked_analytics_add(usage.input, input)?;
+            usage.output = checked_analytics_add(usage.output, output)?;
+            usage.cache_read = checked_analytics_add(usage.cache_read, cache_read)?;
+            usage.cache_creation = checked_analytics_add(usage.cache_creation, cache_creation)?;
+            usage.cost_cents += cents;
+        }
+    }
+
+    let usd_cost = cost_cents / 100.0;
+    let model_entries = models
+        .into_iter()
+        .take(MAX_DETAIL_ENTRIES)
+        .map(|(model, usage)| OnlineDetailEntry {
+            label: model,
+            used: Some(
+                (usage.input + usage.output + usage.cache_read + usage.cache_creation).to_string(),
+            ),
+            remaining: None,
+            limit: None,
+            unit: " Token".to_string(),
+            used_percent: None,
+            window: Some(format!(
+                "输入 {} · 输出 {} · 缓存读取 {} · 缓存创建 {} · ${:.2}",
+                usage.input,
+                usage.output,
+                usage.cache_read,
+                usage.cache_creation,
+                usage.cost_cents / 100.0
+            )),
+            start_at_ms: None,
+            reset_at_ms: None,
+            remaining_ms: None,
+        })
+        .collect();
+    let productivity_entries = [
+        ("会话", sessions),
+        ("新增代码行", added),
+        ("删除代码行", removed),
+        ("提交", commits),
+        ("Pull Request", pull_requests),
+    ]
+    .into_iter()
+    .map(|(label, value)| OnlineDetailEntry {
+        label: label.to_string(),
+        used: Some(value.to_string()),
+        remaining: None,
+        limit: None,
+        unit: "".to_string(),
+        used_percent: None,
+        window: Some("UTC 日汇总".to_string()),
+        start_at_ms: None,
+        reset_at_ms: None,
+        remaining_ms: None,
+    })
+    .collect();
+
+    Ok(OnlineSnapshot {
+        provider_id: OnlineProvider::ClaudeCode.id().to_string(),
+        label: OnlineProvider::ClaudeCode.label().to_string(),
+        source: OnlineProvider::ClaudeCode.source().to_string(),
+        experimental: false,
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: None,
+        cooldown_ends_at_ms: None,
+        requests: Some(sessions),
+        total_tokens: Some(total_tokens),
+        estimated_cost_cny: converted_cny(usd_cost, usd_cny_rate),
+        primary_label: "今日估算成本".to_string(),
+        primary_value: format!("${usd_cost:.2}"),
+        secondary_value: format!("UTC 日汇总 · {sessions} 个会话 · {total_tokens} Token"),
+        detail_sections: vec![
+            OnlineDetailSection {
+                title: "模型用量".to_string(),
+                entries: model_entries,
+            },
+            OnlineDetailSection {
+                title: "开发活动".to_string(),
+                entries: productivity_entries,
+            },
+        ],
+    })
+}
+
+#[derive(Default)]
+struct ClaudeModelUsage {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+    cost_cents: f64,
+}
+
+fn analytics_u64(value: &Value, key: &str) -> Result<u64, OnlineError> {
+    value
+        .get(key)
+        .and_then(number_like_u64)
+        .ok_or(OnlineError::SchemaMismatch)
+}
+
+fn analytics_u64_optional(value: &Value, key: &str) -> Result<u64, OnlineError> {
+    match value.get(key) {
+        Some(value) => number_like_u64(value).ok_or(OnlineError::SchemaMismatch),
+        None => Ok(0),
+    }
+}
+
+fn checked_analytics_add(left: u64, right: u64) -> Result<u64, OnlineError> {
+    left.checked_add(right).ok_or(OnlineError::SchemaMismatch)
+}
+
+fn analytics_label(value: Option<&str>, fallback: &str) -> String {
+    let value = value.unwrap_or(fallback);
+    let sanitized: String = value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(100)
+        .collect();
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn converted_cny(usd: f64, rate: Option<f64>) -> Option<f64> {
+    let rate = rate.filter(|rate| rate.is_finite() && (1.0..=20.0).contains(rate))?;
+    let value = usd * rate;
+    value.is_finite().then_some(value)
+}
+
+fn parse_gemini_analytics(
+    calls_json: &str,
+    tokens_json: &str,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let calls = parse_google_metric(calls_json)?;
+    let tokens = parse_google_metric(tokens_json)?;
+    Ok(OnlineSnapshot {
+        provider_id: OnlineProvider::Gemini.id().to_string(),
+        label: OnlineProvider::Gemini.label().to_string(),
+        source: OnlineProvider::Gemini.source().to_string(),
+        experimental: false,
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: None,
+        cooldown_ends_at_ms: None,
+        requests: Some(calls),
+        total_tokens: Some(tokens),
+        estimated_cost_cny: None,
+        primary_label: "今日 Token".to_string(),
+        primary_value: format_integer_with_commas(tokens),
+        secondary_value: format!("Cloud Monitoring · {calls} 次 API 调用"),
+        detail_sections: vec![OnlineDetailSection {
+            title: "监控指标".to_string(),
+            entries: vec![
+                analytics_count_entry("API 调用", calls, "次"),
+                analytics_count_entry("已用 Token", tokens, " Token"),
+            ],
+        }],
+    })
+}
+
+fn parse_google_metric(json: &str) -> Result<u64, OnlineError> {
+    let value: Value = serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    let Some(series) = value.get("timeSeries") else {
+        return Ok(0);
+    };
+    let series = series.as_array().ok_or(OnlineError::SchemaMismatch)?;
+    let mut total = 0_u64;
+    for item in series {
+        let points = item
+            .get("points")
+            .and_then(Value::as_array)
+            .ok_or(OnlineError::SchemaMismatch)?;
+        for point in points {
+            let metric_value = point.get("value").ok_or(OnlineError::SchemaMismatch)?;
+            let count = if let Some(value) = metric_value.get("int64Value") {
+                number_like_u64(value).ok_or(OnlineError::SchemaMismatch)?
+            } else if let Some(value) = metric_value.get("doubleValue") {
+                count_from_f64(number_like_f64(value).ok_or(OnlineError::SchemaMismatch)?)?
+            } else {
+                return Err(OnlineError::SchemaMismatch);
+            };
+            total = checked_analytics_add(total, count)?;
+        }
+    }
+    Ok(total)
+}
+
+fn parse_qwen_analytics(
+    provider: OnlineProvider,
+    calls_json: &str,
+    tokens_json: &str,
+) -> Result<OnlineSnapshot, OnlineError> {
+    if !matches!(
+        provider,
+        OnlineProvider::QwenCn | OnlineProvider::QwenGlobal
+    ) {
+        return Err(OnlineError::InvalidProvider);
+    }
+    let calls = parse_prometheus_metric(calls_json)?;
+    let tokens = parse_prometheus_metric(tokens_json)?;
+    let mut models = BTreeMap::<String, QwenModelUsage>::new();
+    for (model, value) in calls {
+        models.entry(model).or_default().calls = value;
+    }
+    for (model, value) in tokens {
+        models.entry(model).or_default().tokens = value;
+    }
+    let requests = models.values().try_fold(0_u64, |total, model| {
+        checked_analytics_add(total, model.calls)
+    })?;
+    let total_tokens = models.values().try_fold(0_u64, |total, model| {
+        checked_analytics_add(total, model.tokens)
+    })?;
+    let entries = models
+        .into_iter()
+        .take(MAX_DETAIL_ENTRIES)
+        .map(|(model, usage)| OnlineDetailEntry {
+            label: model,
+            used: Some(usage.tokens.to_string()),
+            remaining: None,
+            limit: None,
+            unit: " Token".to_string(),
+            used_percent: None,
+            window: Some(format!("{} 次调用 · Prometheus 采样合计", usage.calls)),
+            start_at_ms: None,
+            reset_at_ms: None,
+            remaining_ms: None,
+        })
+        .collect();
+    Ok(OnlineSnapshot {
+        provider_id: provider.id().to_string(),
+        label: provider.label().to_string(),
+        source: provider.source().to_string(),
+        experimental: false,
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: None,
+        cooldown_ends_at_ms: None,
+        requests: Some(requests),
+        total_tokens: Some(total_tokens),
+        estimated_cost_cny: None,
+        primary_label: "今日 Token".to_string(),
+        primary_value: format_integer_with_commas(total_tokens),
+        secondary_value: format!("Prometheus · {requests} 次模型调用"),
+        detail_sections: vec![OnlineDetailSection {
+            title: "模型用量".to_string(),
+            entries,
+        }],
+    })
+}
+
+#[derive(Default)]
+struct QwenModelUsage {
+    calls: u64,
+    tokens: u64,
+}
+
+fn parse_prometheus_metric(json: &str) -> Result<BTreeMap<String, u64>, OnlineError> {
+    let value: Value = serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    if value.get("status").and_then(Value::as_str) != Some("success") {
+        return Err(OnlineError::ApiRejected);
+    }
+    let results = value
+        .get("data")
+        .and_then(|data| data.get("result"))
+        .and_then(Value::as_array)
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let mut totals = BTreeMap::<String, u64>::new();
+    for result in results.iter().take(MAX_DETAIL_ENTRIES) {
+        let metric = result
+            .get("metric")
+            .and_then(Value::as_object)
+            .ok_or(OnlineError::SchemaMismatch)?;
+        let model = analytics_label(
+            metric
+                .get("model")
+                .or_else(|| metric.get("model_name"))
+                .and_then(Value::as_str),
+            "全部模型",
+        );
+        let mut series_total = 0_u64;
+        if let Some(values) = result.get("values").and_then(Value::as_array) {
+            for sample in values {
+                let sample = sample.as_array().ok_or(OnlineError::SchemaMismatch)?;
+                let value = sample.get(1).ok_or(OnlineError::SchemaMismatch)?;
+                series_total = checked_analytics_add(series_total, prometheus_count(value)?)?;
+            }
+        } else if let Some(sample) = result.get("value").and_then(Value::as_array) {
+            let value = sample.get(1).ok_or(OnlineError::SchemaMismatch)?;
+            series_total = prometheus_count(value)?;
+        } else {
+            return Err(OnlineError::SchemaMismatch);
+        }
+        let current = totals.entry(model).or_default();
+        *current = checked_analytics_add(*current, series_total)?;
+    }
+    Ok(totals)
+}
+
+fn prometheus_count(value: &Value) -> Result<u64, OnlineError> {
+    match value {
+        Value::String(text) => text
+            .parse::<f64>()
+            .map_err(|_| OnlineError::SchemaMismatch)
+            .and_then(count_from_f64),
+        _ => number_like_f64(value)
+            .ok_or(OnlineError::SchemaMismatch)
+            .and_then(count_from_f64),
+    }
+}
+
+fn count_from_f64(value: f64) -> Result<u64, OnlineError> {
+    if !value.is_finite()
+        || value < 0.0
+        || value > u64::MAX as f64
+        || value.fract().abs() > f64::EPSILON
+    {
+        return Err(OnlineError::SchemaMismatch);
+    }
+    Ok(value as u64)
+}
+
+fn analytics_count_entry(label: &str, value: u64, unit: &str) -> OnlineDetailEntry {
+    OnlineDetailEntry {
+        label: label.to_string(),
+        used: Some(value.to_string()),
+        remaining: None,
+        limit: None,
+        unit: unit.to_string(),
+        used_percent: None,
+        window: Some("请求区间汇总".to_string()),
+        start_at_ms: None,
+        reset_at_ms: None,
+        remaining_ms: None,
+    }
+}
+
+fn format_integer_with_commas(value: u64) -> String {
+    let raw = value.to_string();
+    let mut formatted = String::with_capacity(raw.len() + raw.len() / 3);
+    for (index, character) in raw.chars().enumerate() {
+        if index > 0 && (raw.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(character);
+    }
+    formatted
+}
+
 fn balance_snapshot(
     provider: OnlineProvider,
     amount: f64,
@@ -901,12 +1942,7 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
             if let Some(entry) = minimax_count_detail_entry(
                 format!("{model} · 当前窗口"),
                 map,
-                "current_interval_usage_count",
-                "current_interval_total_count",
-                "current_interval_remaining_percent",
-                "current_interval_status",
-                true,
-                false,
+                MiniMaxQuotaWindow::Current,
             ) {
                 if entries.len() < MAX_DETAIL_ENTRIES {
                     entries.push(entry);
@@ -915,12 +1951,7 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
             if let Some(entry) = minimax_count_detail_entry(
                 format!("{model} · 周额度"),
                 map,
-                "current_weekly_usage_count",
-                "current_weekly_total_count",
-                "current_weekly_remaining_percent",
-                "current_weekly_status",
-                true,
-                true,
+                MiniMaxQuotaWindow::Weekly,
             ) {
                 if entries.len() < MAX_DETAIL_ENTRIES {
                     entries.push(entry);
@@ -932,12 +1963,7 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                 if let Some(entry) = minimax_count_detail_entry(
                     format!("{model} · 套餐用量"),
                     map,
-                    "usage_count",
-                    "total_count",
-                    "usage_percent",
-                    "status",
-                    false,
-                    false,
+                    MiniMaxQuotaWindow::Legacy,
                 ) {
                     if entries.len() < MAX_DETAIL_ENTRIES {
                         entries.push(entry);
@@ -963,16 +1989,45 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
     }
 }
 
+#[derive(Clone, Copy)]
+enum MiniMaxQuotaWindow {
+    Current,
+    Weekly,
+    Legacy,
+}
+
 fn minimax_count_detail_entry(
     label: String,
     map: &serde_json::Map<String, Value>,
-    used_key: &str,
-    total_key: &str,
-    remaining_percent_key: &str,
-    status_key: &str,
-    usage_is_remaining: bool,
-    weekly: bool,
+    window: MiniMaxQuotaWindow,
 ) -> Option<OnlineDetailEntry> {
+    let (used_key, total_key, remaining_percent_key, status_key, usage_is_remaining, weekly) =
+        match window {
+            MiniMaxQuotaWindow::Current => (
+                "current_interval_usage_count",
+                "current_interval_total_count",
+                "current_interval_remaining_percent",
+                "current_interval_status",
+                true,
+                false,
+            ),
+            MiniMaxQuotaWindow::Weekly => (
+                "current_weekly_usage_count",
+                "current_weekly_total_count",
+                "current_weekly_remaining_percent",
+                "current_weekly_status",
+                true,
+                true,
+            ),
+            MiniMaxQuotaWindow::Legacy => (
+                "usage_count",
+                "total_count",
+                "usage_percent",
+                "status",
+                false,
+                false,
+            ),
+        };
     let total = map.get(total_key).and_then(number_like_u64);
     let usage = map.get(used_key).and_then(number_like_u64);
     let remaining_percent = map
@@ -1680,6 +2735,201 @@ mod tests {
         );
         assert_eq!(snapshot.primary_value, "$17.75");
         assert_eq!(snapshot.source, "official_credits");
+    }
+
+    #[test]
+    fn parses_openai_codex_organization_usage_and_cost_without_claiming_subscription_quota() {
+        let usage = r#"{
+          "data": [{"results": [
+            {"model": "gpt-5.4-codex", "input_tokens": 1000, "output_tokens": 500, "input_cached_tokens": 800, "num_model_requests": 5},
+            {"model": "gpt-5.4-mini", "input_tokens": 200, "output_tokens": 50, "input_cached_tokens": 0, "num_model_requests": 2}
+          ]}],
+          "has_more": false
+        }"#;
+        let costs = r#"{
+          "data": [{"results": [
+            {"amount": {"value": 0.06, "currency": "usd"}, "line_item": "Responses API"}
+          ]}],
+          "has_more": false
+        }"#;
+
+        let snapshot = parse_openai_analytics(usage, costs, Some(7.2)).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "openai_codex");
+        assert_eq!(snapshot.requests, Some(7));
+        assert_eq!(snapshot.total_tokens, Some(1750));
+        assert_eq!(snapshot.estimated_cost_cny, Some(0.432));
+        assert_eq!(snapshot.primary_value, "$0.06");
+        assert!(snapshot.secondary_value.contains("API 组织"));
+        assert!(snapshot.secondary_value.contains("非 ChatGPT 套餐"));
+        assert!(snapshot.detail_sections[0]
+            .entries
+            .iter()
+            .any(|entry| entry.label == "gpt-5.4-codex"));
+    }
+
+    #[test]
+    fn parses_claude_code_daily_analytics_without_exposing_actor_identity() {
+        let json = r#"{
+          "data": [{
+            "date": "2026-07-11T00:00:00Z",
+            "actor": {"type": "user_actor", "email_address": "private@example.com"},
+            "core_metrics": {"num_sessions": 5, "lines_of_code": {"added": 1543, "removed": 892}, "commits_by_claude_code": 12, "pull_requests_by_claude_code": 2},
+            "model_breakdown": [{
+              "model": "claude-opus-4-8",
+              "tokens": {"input": 100000, "output": 35000, "cache_read": 10000, "cache_creation": 5000},
+              "estimated_cost": {"currency": "USD", "amount": 1025}
+            }]
+          }],
+          "has_more": false,
+          "next_page": null
+        }"#;
+
+        let snapshot = parse_claude_code_analytics(json, Some(7.2)).expect("snapshot");
+        let serialized = serde_json::to_string(&snapshot).expect("serialize");
+
+        assert_eq!(snapshot.provider_id, "claude_code");
+        assert_eq!(snapshot.requests, Some(5));
+        assert_eq!(snapshot.total_tokens, Some(150000));
+        assert_eq!(snapshot.estimated_cost_cny, Some(73.8));
+        assert_eq!(snapshot.primary_value, "$10.25");
+        assert!(!serialized.contains("private@example.com"));
+        assert!(snapshot
+            .detail_sections
+            .iter()
+            .any(|section| section.title == "模型用量"));
+    }
+
+    #[test]
+    fn recognizes_requested_analytics_provider_ids() {
+        assert_eq!(
+            OnlineProvider::from_id("openai_codex"),
+            Some(OnlineProvider::OpenAiCodex)
+        );
+        assert_eq!(
+            OnlineProvider::from_id("claude_code"),
+            Some(OnlineProvider::ClaudeCode)
+        );
+        assert_eq!(
+            OnlineProvider::from_id("gemini"),
+            Some(OnlineProvider::Gemini)
+        );
+        assert_eq!(
+            OnlineProvider::from_id("qwen_cn"),
+            Some(OnlineProvider::QwenCn)
+        );
+        assert_eq!(
+            OnlineProvider::from_id("qwen_global"),
+            Some(OnlineProvider::QwenGlobal)
+        );
+    }
+
+    #[test]
+    fn validates_gemini_and_qwen_structured_credentials_at_the_rust_boundary() {
+        let gemini = OnlineClient::new(
+            OnlineProvider::Gemini,
+            r#"{"projectId":"sample-project","accessToken":"ya29.test-token"}"#,
+        )
+        .expect("Gemini client");
+        let gemini_request = gemini
+            .gemini_metric_request(
+                OnlineUsageRange::new(1_783_641_600_000, 1_783_728_000_000).expect("range"),
+                "code_assist/api_calls_count",
+            )
+            .expect("Gemini metric request");
+        assert_eq!(gemini_request.url().scheme(), "https");
+        assert_eq!(
+            gemini_request.url().host_str(),
+            Some("monitoring.googleapis.com")
+        );
+        assert!(gemini_request.url().path().contains("sample-project"));
+        assert!(gemini_request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_some_and(reqwest::header::HeaderValue::is_sensitive));
+
+        assert_eq!(
+            OnlineClient::new(
+                OnlineProvider::Gemini,
+                r#"{"projectId":"../bad","accessToken":"ya29.test-token"}"#,
+            )
+            .expect_err("invalid project")
+            .code(),
+            "ONLINE_INVALID_CREDENTIAL"
+        );
+
+        let qwen = OnlineClient::new(
+            OnlineProvider::QwenCn,
+            r#"{"endpoint":"https://prometheus.cn-hangzhou.aliyuncs.com","accessKeyId":"LTAI-test","accessKeySecret":"secret-test"}"#,
+        )
+        .expect("Qwen client");
+        let qwen_request = qwen
+            .qwen_metric_request(
+                OnlineUsageRange::new(1_783_641_600_000, 1_783_728_000_000).expect("range"),
+                "model_usage",
+            )
+            .expect("Qwen metric request");
+        assert_eq!(qwen_request.url().scheme(), "https");
+        assert!(qwen_request.url().path().ends_with("/api/v1/query_range"));
+        assert!(qwen_request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_some_and(reqwest::header::HeaderValue::is_sensitive));
+        assert_eq!(
+            OnlineClient::new(
+                OnlineProvider::QwenCn,
+                r#"{"endpoint":"https://example.com","accessKeyId":"LTAI-test","accessKeySecret":"secret-test"}"#,
+            )
+            .expect_err("untrusted host")
+            .code(),
+            "ONLINE_INVALID_CREDENTIAL"
+        );
+    }
+
+    #[test]
+    fn parses_gemini_code_assist_monitoring_metrics() {
+        let calls = r#"{"timeSeries":[{"points":[{"value":{"int64Value":"7"}},{"value":{"doubleValue":5}}]}]}"#;
+        let tokens = r#"{"timeSeries":[{"points":[{"value":{"int64Value":"3000"}}]}]}"#;
+
+        let snapshot = parse_gemini_analytics(calls, tokens).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "gemini");
+        assert_eq!(snapshot.requests, Some(12));
+        assert_eq!(snapshot.total_tokens, Some(3000));
+        assert_eq!(snapshot.primary_value, "3,000");
+        assert!(snapshot.secondary_value.contains("Cloud Monitoring"));
+    }
+
+    #[test]
+    fn parses_qwen_prometheus_usage_for_every_model() {
+        let calls = r#"{
+          "status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"model":"qwen3.7-plus"},"values":[[1783641600,"3"],[1783645200,"4"]]},
+            {"metric":{"model":"qwen3-coder"},"values":[[1783641600,"2"]]}
+          ]}
+        }"#;
+        let tokens = r#"{
+          "status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"model":"qwen3.7-plus"},"values":[[1783641600,"1000"],[1783645200,"2000"]]},
+            {"metric":{"model":"qwen3-coder"},"values":[[1783641600,"500"]]}
+          ]}
+        }"#;
+
+        let snapshot =
+            parse_qwen_analytics(OnlineProvider::QwenCn, calls, tokens).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "qwen_cn");
+        assert_eq!(snapshot.requests, Some(9));
+        assert_eq!(snapshot.total_tokens, Some(3500));
+        assert_eq!(snapshot.detail_sections[0].entries.len(), 2);
+        assert!(snapshot.detail_sections[0]
+            .entries
+            .iter()
+            .any(|entry| entry.label == "qwen3.7-plus"));
+        assert!(snapshot.detail_sections[0]
+            .entries
+            .iter()
+            .any(|entry| entry.label == "qwen3-coder"));
     }
 
     #[test]
