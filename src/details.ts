@@ -11,11 +11,21 @@ export function renderProviderDetails(
 ) {
   const root = document.getElementById(`${providerId}-details`);
   if (!root) return;
+  const wasOpen = root.querySelector("details")?.open ?? false;
   root.replaceChildren();
   if (!sections?.length) {
     root.hidden = true;
     return;
   }
+
+  const details = document.createElement("details");
+  details.className = "detail-disclosure";
+  details.open = wasOpen;
+  const summary = document.createElement("summary");
+  const entryCount = sections.reduce((total, section) => total + section.entries.length, 0);
+  summary.textContent = `完整明细 · ${entryCount} 项`;
+  const content = document.createElement("div");
+  content.className = "detail-content";
 
   for (const detailSection of sections) {
     const section = document.createElement("section");
@@ -26,8 +36,10 @@ export function renderProviderDetails(
     grid.className = "detail-grid";
     for (const entry of detailSection.entries) grid.append(renderDetailEntry(entry));
     section.append(heading, grid);
-    root.append(section);
+    content.append(section);
   }
+  details.append(summary, content);
+  root.append(details);
   root.hidden = false;
 }
 

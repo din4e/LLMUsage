@@ -42,77 +42,14 @@
           <p>在线用量优先 · 实验接口会单独标注</p>
         </section>
 
-        <section class="provider-list" id="provider-list" aria-label="供应商用量">
-          <article class="provider-row featured" data-provider="glm">
-            <div class="provider-identity"><span class="provider-mark glm">G</span><div><h3>智谱 GLM</h3><p>兼容接口 · Coding Plan</p></div></div>
-            <div class="usage-cell"><span>今日 Token</span><strong id="glm-tokens">等待配置</strong><small id="glm-requests">添加 API Key 后同步</small></div>
-            <div class="quota-cell"><div><span>5 小时窗口</span><b id="glm-percent">—</b></div><progress id="glm-progress" max="100" value="0">0%</progress><small id="glm-cooldown">重置时间未知</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="glm">配置</button>
-          </article>
-
-          <article class="provider-row" data-provider="kimi_cn">
-            <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Kimi Code</h3><p>会员额度 · 5 小时 / 周窗口</p></div></div>
-            <div class="usage-cell"><span>额度状态</span><strong id="kimi_cn-primary">等待配置</strong><small id="kimi_cn-secondary">支持 sk-kimi 与 Moonshot Key</small></div>
-            <div class="quota-cell"><div><span id="kimi_cn-quota-label">5 小时窗口</span><b id="kimi_cn-quota-value">—</b></div><progress id="kimi_cn-progress" max="100" value="0">0%</progress><small id="kimi_cn-quota-hint">会员 Key 查询在线额度</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="kimi_cn">配置</button>
-            <div class="provider-details" id="kimi_cn-details" aria-label="Kimi 完整额度明细" hidden></div>
-          </article>
-
-          <article class="provider-row" data-provider="kimi_global">
-            <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Kimi Global</h3><p>官方余额 · Moonshot AI</p></div></div>
-            <div class="usage-cell"><span>可用余额</span><strong id="kimi_global-primary">等待配置</strong><small id="kimi_global-secondary">国际站 API Key</small></div>
-            <div class="quota-cell unavailable"><span id="kimi_global-quota-label">用量口径</span><strong id="kimi_global-quota-value">余额在线查询</strong><small id="kimi_global-quota-hint">按官方余额返回</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="kimi_global">配置</button>
-          </article>
-
-          <article class="provider-row" data-provider="deepseek">
-            <div class="provider-identity"><span class="provider-mark deepseek">D</span><div><h3>DeepSeek</h3><p>官方余额 · API Platform</p></div></div>
-            <div class="usage-cell"><span>可用余额</span><strong id="deepseek-primary">等待配置</strong><small id="deepseek-secondary">充值与赠余额</small></div>
-            <div class="quota-cell unavailable"><span id="deepseek-quota-label">用量口径</span><strong id="deepseek-quota-value">余额在线查询</strong><small id="deepseek-quota-hint">按官方余额返回</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="deepseek">配置</button>
-          </article>
-
-          <article class="provider-row" data-provider="minimax_cn">
-            <div class="provider-identity"><span class="provider-mark minimax">M</span><div><h3>MiniMax</h3><p>国内站 · Token Plan</p></div></div>
-            <div class="usage-cell"><span>套餐用量</span><strong id="minimax_cn-primary">等待配置</strong><small id="minimax_cn-secondary">需要 sk-cp 订阅 Key</small></div>
-            <div class="quota-cell"><div><span id="minimax_cn-quota-label">套餐窗口</span><b id="minimax_cn-quota-value">—</b></div><progress id="minimax_cn-progress" max="100" value="0">0%</progress><small id="minimax_cn-quota-hint">官方 www / API 域名回退</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="minimax_cn">配置</button>
-            <div class="provider-details" id="minimax_cn-details" aria-label="MiniMax 国内完整额度明细" hidden></div>
-          </article>
-
-          <article class="provider-row" data-provider="minimax_global">
-            <div class="provider-identity"><span class="provider-mark minimax">M</span><div><h3>MiniMax Global</h3><p>Token Plan · Experimental</p></div></div>
-            <div class="usage-cell"><span>套餐余量</span><strong id="minimax_global-primary">等待配置</strong><small id="minimax_global-secondary">国际站 · 实验接口</small></div>
-            <div class="quota-cell unavailable"><div><span id="minimax_global-quota-label">冷却状态</span><b id="minimax_global-quota-value">—</b></div><progress id="minimax_global-progress" max="100" value="0">0%</progress><small id="minimax_global-quota-hint">按套餐窗口恢复</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="minimax_global">配置</button>
-            <div class="provider-details" id="minimax_global-details" aria-label="MiniMax Global 完整额度明细" hidden></div>
-          </article>
-
-          <article class="provider-row" data-provider="siliconflow_cn">
-            <div class="provider-identity"><span class="provider-mark siliconflow">S</span><div><h3>硅基流动</h3><p>官方余额 · SiliconFlow</p></div></div>
-            <div class="usage-cell"><span>可用余额</span><strong id="siliconflow_cn-primary">等待配置</strong><small id="siliconflow_cn-secondary">国内站 · 充值与赠金</small></div>
-            <div class="quota-cell unavailable"><span id="siliconflow_cn-quota-label">用量口径</span><strong id="siliconflow_cn-quota-value">余额在线查询</strong><small id="siliconflow_cn-quota-hint">官方用户信息接口</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="siliconflow_cn">配置</button>
-          </article>
-
-          <article class="provider-row" data-provider="siliconflow_global">
-            <div class="provider-identity"><span class="provider-mark siliconflow">S</span><div><h3>SiliconFlow Global</h3><p>Official balance · SiliconFlow</p></div></div>
-            <div class="usage-cell"><span>可用余额</span><strong id="siliconflow_global-primary">等待配置</strong><small id="siliconflow_global-secondary">国际站 · 充值与赠金</small></div>
-            <div class="quota-cell unavailable"><span id="siliconflow_global-quota-label">用量口径</span><strong id="siliconflow_global-quota-value">余额在线查询</strong><small id="siliconflow_global-quota-hint">官方用户信息接口</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="siliconflow_global">配置</button>
-          </article>
-
-          <article class="provider-row" data-provider="openrouter">
-            <div class="provider-identity"><span class="provider-mark openrouter">O</span><div><h3>OpenRouter</h3><p>Official credits · Management API</p></div></div>
-            <div class="usage-cell"><span>剩余额度</span><strong id="openrouter-primary">等待配置</strong><small id="openrouter-secondary">需要 management key</small></div>
-            <div class="quota-cell unavailable"><span id="openrouter-quota-label">用量口径</span><strong id="openrouter-quota-value">额度在线查询</strong><small id="openrouter-quota-hint">返回 purchased / used credits</small></div>
-            <button class="row-action" type="button" data-action="configure" data-provider="openrouter">配置</button>
-          </article>
+        <section class="provider-list" id="provider-list" aria-label="已配置供应商用量"></section>
+        <section class="provider-empty" id="provider-empty">
+          <div><strong>还没有已配置供应商</strong><span>添加后才会出现在主列表</span></div>
+          <button class="row-action" type="button" data-action="open-catalog">添加供应商</button>
         </section>
-
         <section class="more-providers" id="providers">
-          <span>还可接入</span>
-          <ul aria-label="更多供应商"><li>Qwen</li><li>豆包</li><li>OpenAI</li><li>Claude</li><li>Gemini</li><li>Groq</li></ul>
+          <span id="catalog-summary">未配置供应商集中收纳，不占用仪表盘空间</span>
+          <button class="row-action" type="button" data-action="open-catalog">＋ 添加供应商</button>
         </section>
       </main>
     </div>
@@ -121,9 +58,16 @@
       <form method="dialog" id="provider-form">
         <div class="dialog-heading"><div><p class="eyebrow">SECURE SETUP</p><h2 id="dialog-title">配置供应商</h2></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
         <p class="dialog-copy" id="dialog-copy">密钥由 Windows DPAPI 加密，仅当前用户可解密，不会写入数据库或日志。</p>
-        <label for="api-key">API Key</label>
-        <input id="api-key" name="apiKey" type="password" autocomplete="off" spellcheck="false" required placeholder="输入供应商 API Key" />
+        <div id="credential-fields"></div>
         <div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button value="save" id="save-provider" class="refresh-button">保存并同步</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="catalog-dialog" aria-labelledby="catalog-title">
+      <form method="dialog" class="catalog-form">
+        <div class="dialog-heading"><div><p class="eyebrow">PROVIDER CATALOG</p><h2 id="catalog-title">添加供应商</h2></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+        <p class="dialog-copy">只展示真实可查询的在线能力；不同地区和凭据类型分开配置。</p>
+        <div class="provider-catalog" id="provider-catalog"></div>
       </form>
     </dialog>
 
