@@ -794,30 +794,53 @@ struct MiniMaxQuota {
 fn find_minimax_count_quota(value: &Value) -> Option<MiniMaxQuota> {
     match value {
         Value::Object(map) => {
+            if let Some(remaining_percent) = map
+                .get("current_interval_remaining_percent")
+                .or_else(|| map.get("currentIntervalRemainingPercent"))
+                .and_then(number_like_f64)
+                .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
+            {
+                let model = minimax_model_label(map);
+                return Some(MiniMaxQuota {
+                    used_percent: 100.0 - remaining_percent,
+                    detail: format!("{model} · 剩余 {remaining_percent:.1}%"),
+                    reset_at_ms: find_reset_timestamp(value),
+                });
+            }
             let pairs = [
                 (
                     "current_interval_usage_count",
                     "current_interval_total_count",
+                    true,
                 ),
-                ("current_weekly_usage_count", "current_weekly_total_count"),
-                ("usage_count", "total_count"),
-                ("used", "total"),
+                (
+                    "current_weekly_usage_count",
+                    "current_weekly_total_count",
+                    true,
+                ),
+                ("usage_count", "total_count", false),
+                ("used", "total", false),
             ];
-            for (used_key, total_key) in pairs {
-                let used = map.get(used_key).and_then(number_like_u64);
+            for (usage_key, total_key, usage_is_remaining) in pairs {
+                let usage = map.get(usage_key).and_then(number_like_u64);
                 let total = map.get(total_key).and_then(number_like_u64);
-                if let (Some(used), Some(total)) = (used, total) {
-                    if total == 0 || used > total {
+                if let (Some(usage), Some(total)) = (usage, total) {
+                    if total == 0 || usage > total {
                         continue;
                     }
+                    let (used, remaining) = if usage_is_remaining {
+                        (total - usage, usage)
+                    } else {
+                        (usage, total - usage)
+                    };
                     let model = map
                         .get("model_name")
                         .or_else(|| map.get("modelName"))
                         .and_then(Value::as_str)
                         .filter(|name| !name.trim().is_empty());
                     let detail = match model {
-                        Some(model) => format!("{model} · 已用 {used} / {total}"),
-                        None => format!("已用 {used} / {total}"),
+                        Some(model) => format!("{model} · 剩余 {remaining} / {total}"),
+                        None => format!("剩余 {remaining} / {total}"),
                     };
                     return Some(MiniMaxQuota {
                         used_percent: percentage(used as f64, total as f64),
@@ -880,7 +903,10 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                 map,
                 "current_interval_usage_count",
                 "current_interval_total_count",
+                "current_interval_remaining_percent",
+                "current_interval_status",
                 true,
+                false,
             ) {
                 if entries.len() < MAX_DETAIL_ENTRIES {
                     entries.push(entry);
@@ -891,7 +917,10 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                 map,
                 "current_weekly_usage_count",
                 "current_weekly_total_count",
-                false,
+                "current_weekly_remaining_percent",
+                "current_weekly_status",
+                true,
+                true,
             ) {
                 if entries.len() < MAX_DETAIL_ENTRIES {
                     entries.push(entry);
@@ -905,7 +934,10 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                     map,
                     "usage_count",
                     "total_count",
-                    true,
+                    "usage_percent",
+                    "status",
+                    false,
+                    false,
                 ) {
                     if entries.len() < MAX_DETAIL_ENTRIES {
                         entries.push(entry);
@@ -936,50 +968,126 @@ fn minimax_count_detail_entry(
     map: &serde_json::Map<String, Value>,
     used_key: &str,
     total_key: &str,
-    include_interval_time: bool,
+    remaining_percent_key: &str,
+    status_key: &str,
+    usage_is_remaining: bool,
+    weekly: bool,
 ) -> Option<OnlineDetailEntry> {
-    let used = map.get(used_key).and_then(number_like_u64)?;
-    let total = map.get(total_key).and_then(number_like_u64)?;
-    if total == 0 || used > total {
-        return None;
-    }
-    let start_at_ms = include_interval_time
-        .then(|| {
-            map.get("start_time")
-                .or_else(|| map.get("startTime"))
-                .and_then(timestamp_value)
-        })
-        .flatten();
-    let reset_at_ms = if include_interval_time {
-        map.get("end_time")
-            .or_else(|| map.get("endTime"))
+    let total = map.get(total_key).and_then(number_like_u64);
+    let usage = map.get(used_key).and_then(number_like_u64);
+    let remaining_percent = map
+        .get(remaining_percent_key)
+        .and_then(number_like_f64)
+        .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent));
+    let status = map.get(status_key).and_then(number_like_i64);
+    let unlimited = status == Some(3);
+    let boost = if weekly {
+        map.get("weekly_boost_permille")
+            .or_else(|| map.get("weeklyBoostPermille"))
+            .and_then(number_like_f64)
+            .map(|permille| (permille / 1000.0).max(0.0))
+            .unwrap_or(1.0)
+    } else {
+        1.0
+    };
+
+    let (used, remaining, limit, unit, used_percent) = if unlimited {
+        (
+            None,
+            Some("无限".to_string()),
+            Some("无限".to_string()),
+            "".to_string(),
+            Some(0.0),
+        )
+    } else if let (Some(total), Some(remaining)) = (total, usage) {
+        if total == 0 || remaining > total {
+            percent_quota_values(remaining_percent?, boost)
+        } else {
+            let (used, remaining) = if usage_is_remaining {
+                (total - remaining, remaining)
+            } else {
+                (remaining, total - remaining)
+            };
+            (
+                Some(used.to_string()),
+                Some(remaining.to_string()),
+                Some(total.to_string()),
+                "次".to_string(),
+                Some(percentage(used as f64, total as f64)),
+            )
+        }
+    } else {
+        percent_quota_values(remaining_percent?, boost)
+    };
+
+    let start_at_ms = if weekly {
+        map.get("weekly_start_time")
+            .or_else(|| map.get("weeklyStartTime"))
             .and_then(timestamp_value)
     } else {
+        map.get("start_time")
+            .or_else(|| map.get("startTime"))
+            .and_then(timestamp_value)
+    };
+    let reset_at_ms = if weekly {
         map.get("weekly_end_time")
             .or_else(|| map.get("weeklyEndTime"))
             .or_else(|| map.get("next_weekly_reset_time"))
             .and_then(timestamp_value)
+    } else {
+        map.get("end_time")
+            .or_else(|| map.get("endTime"))
+            .and_then(timestamp_value)
     };
-    let remaining_ms = include_interval_time
-        .then(|| {
-            map.get("remains_time")
-                .or_else(|| map.get("remainsTime"))
-                .and_then(number_like_i64)
-                .filter(|duration| *duration >= 0)
-        })
-        .flatten();
+    let remaining_ms = if weekly {
+        map.get("weekly_remains_time")
+            .or_else(|| map.get("weeklyRemainsTime"))
+            .and_then(number_like_i64)
+            .filter(|duration| *duration >= 0)
+    } else {
+        map.get("remains_time")
+            .or_else(|| map.get("remainsTime"))
+            .and_then(number_like_i64)
+            .filter(|duration| *duration >= 0)
+    };
     Some(OnlineDetailEntry {
         label,
-        used: Some(used.to_string()),
-        remaining: Some((total - used).to_string()),
-        limit: Some(total.to_string()),
-        unit: "次".to_string(),
-        used_percent: Some(percentage(used as f64, total as f64)),
+        used,
+        remaining,
+        limit,
+        unit,
+        used_percent,
         window: window_duration(start_at_ms, reset_at_ms),
         start_at_ms,
         reset_at_ms,
         remaining_ms,
     })
+}
+
+fn percent_quota_values(
+    remaining_percent: f64,
+    boost: f64,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<f64>,
+) {
+    let limit = 100.0 * boost;
+    let remaining = (remaining_percent * boost).clamp(0.0, limit);
+    let used = limit - remaining;
+    (
+        Some(format_detail_number(used)),
+        Some(format_detail_number(remaining)),
+        Some(format_detail_number(limit)),
+        "%".to_string(),
+        Some(if limit > 0.0 {
+            percentage(used, limit)
+        } else {
+            0.0
+        }),
+    )
 }
 
 fn minimax_model_label(map: &serde_json::Map<String, Value>) -> String {
@@ -1340,7 +1448,7 @@ mod tests {
         let snapshot = parse_snapshot(OnlineProvider::MiniMaxGlobal, json).expect("snapshot");
 
         assert_eq!(snapshot.provider_id, "minimax_global");
-        assert_eq!(snapshot.quota_used_percent, Some(37.5));
+        assert_eq!(snapshot.quota_used_percent, Some(62.5));
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
         assert!(snapshot.experimental);
     }
@@ -1373,33 +1481,33 @@ mod tests {
 
         let snapshot = parse_snapshot(OnlineProvider::MiniMaxCn, json).expect("snapshot");
 
-        assert_eq!(snapshot.quota_used_percent, Some(37.5));
+        assert_eq!(snapshot.quota_used_percent, Some(62.5));
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
-        assert_eq!(snapshot.secondary_value, "MiniMax-M2.5 · 已用 375 / 1000");
+        assert_eq!(snapshot.secondary_value, "MiniMax-M2.5 · 剩余 375 / 1000");
 
         assert_eq!(snapshot.detail_sections.len(), 1);
         let models = &snapshot.detail_sections[0];
         assert_eq!(models.title, "模型额度");
         assert_eq!(models.entries.len(), 3);
         assert_eq!(models.entries[0].label, "MiniMax-M2.5 · 当前窗口");
-        assert_eq!(models.entries[0].used.as_deref(), Some("375"));
-        assert_eq!(models.entries[0].remaining.as_deref(), Some("625"));
+        assert_eq!(models.entries[0].used.as_deref(), Some("625"));
+        assert_eq!(models.entries[0].remaining.as_deref(), Some("375"));
         assert_eq!(models.entries[0].limit.as_deref(), Some("1000"));
         assert_eq!(models.entries[0].unit, "次");
-        assert_eq!(models.entries[0].used_percent, Some(37.5));
+        assert_eq!(models.entries[0].used_percent, Some(62.5));
         assert_eq!(models.entries[0].start_at_ms, Some(1_783_668_600_000));
         assert_eq!(models.entries[0].reset_at_ms, Some(1_783_686_600_000));
         assert_eq!(models.entries[0].remaining_ms, Some(600_000));
 
         assert_eq!(models.entries[1].label, "MiniMax-M2.5 · 周额度");
-        assert_eq!(models.entries[1].used.as_deref(), Some("1000"));
-        assert_eq!(models.entries[1].remaining.as_deref(), Some("4000"));
-        assert_eq!(models.entries[1].used_percent, Some(20.0));
+        assert_eq!(models.entries[1].used.as_deref(), Some("4000"));
+        assert_eq!(models.entries[1].remaining.as_deref(), Some("1000"));
+        assert_eq!(models.entries[1].used_percent, Some(80.0));
 
         assert_eq!(models.entries[2].label, "image-01 · 当前窗口");
-        assert_eq!(models.entries[2].used.as_deref(), Some("2"));
-        assert_eq!(models.entries[2].remaining.as_deref(), Some("8"));
-        assert_eq!(models.entries[2].used_percent, Some(20.0));
+        assert_eq!(models.entries[2].used.as_deref(), Some("8"));
+        assert_eq!(models.entries[2].remaining.as_deref(), Some("2"));
+        assert_eq!(models.entries[2].used_percent, Some(80.0));
     }
 
     #[test]
@@ -1422,13 +1530,89 @@ mod tests {
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
         assert_eq!(snapshot.detail_sections.len(), 1);
         let detail = &snapshot.detail_sections[0].entries[0];
-        assert_eq!(detail.label, "套餐 · 套餐用量");
+        assert_eq!(detail.label, "general · 套餐用量");
         assert_eq!(detail.used.as_deref(), Some("27.5"));
         assert_eq!(detail.remaining.as_deref(), Some("72.5"));
         assert_eq!(detail.limit.as_deref(), Some("100"));
         assert_eq!(detail.unit, "%");
         assert_eq!(detail.used_percent, Some(27.5));
         assert_eq!(detail.reset_at_ms, Some(1_783_686_600_000));
+    }
+
+    #[test]
+    fn parses_all_minimax_resources_and_treats_coding_plan_counts_as_remaining() {
+        let json = r#"{
+          "base_resp": {"status_code": 0, "status_msg": "success"},
+          "model_remains": [
+            {
+              "model_name": "general",
+              "start_time": 1783668600000,
+              "end_time": 1783686600000,
+              "remains_time": 600000,
+              "current_interval_total_count": 0,
+              "current_interval_usage_count": 0,
+              "current_interval_remaining_percent": 94,
+              "current_weekly_total_count": 0,
+              "current_weekly_usage_count": 0,
+              "current_weekly_remaining_percent": 98,
+              "weekly_boost_permille": 1500,
+              "weekly_start_time": 1783555200000,
+              "weekly_end_time": 1784160000000,
+              "weekly_remains_time": 432000000
+            },
+            {
+              "model_name": "video",
+              "current_interval_total_count": 3,
+              "current_interval_usage_count": 3,
+              "current_interval_remaining_percent": 100,
+              "current_weekly_total_count": 21,
+              "current_weekly_usage_count": 21,
+              "current_weekly_remaining_percent": 100
+            },
+            {
+              "model_name": "speech-hd",
+              "current_interval_total_count": 9000,
+              "current_interval_usage_count": 8000
+            },
+            {
+              "model_name": "image-01",
+              "current_interval_total_count": 100,
+              "current_interval_usage_count": 80
+            },
+            {
+              "model_name": "music-2.0",
+              "current_interval_total_count": 50,
+              "current_interval_usage_count": 40
+            }
+          ]
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::MiniMaxCn, json).expect("snapshot");
+        let entries = &snapshot.detail_sections[0].entries;
+
+        assert_eq!(entries.len(), 7);
+        assert_eq!(entries[0].label, "general · 当前窗口");
+        assert_eq!(entries[0].used.as_deref(), Some("6"));
+        assert_eq!(entries[0].remaining.as_deref(), Some("94"));
+        assert_eq!(entries[0].unit, "%");
+        assert_eq!(entries[0].used_percent, Some(6.0));
+        assert_eq!(entries[1].label, "general · 周额度");
+        assert_eq!(entries[1].remaining.as_deref(), Some("147"));
+        assert_eq!(entries[1].limit.as_deref(), Some("150"));
+
+        let video = entries
+            .iter()
+            .find(|entry| entry.label == "video · 当前窗口")
+            .expect("video quota");
+        assert_eq!(video.used.as_deref(), Some("0"));
+        assert_eq!(video.remaining.as_deref(), Some("3"));
+        assert_eq!(video.used_percent, Some(0.0));
+
+        for resource in ["speech-hd", "image-01", "music-2.0"] {
+            assert!(entries
+                .iter()
+                .any(|entry| entry.label == format!("{resource} · 当前窗口")));
+        }
     }
 
     #[test]
