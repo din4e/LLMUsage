@@ -45,6 +45,9 @@ const providers = [
   { id: "deepseek", name: "DeepSeek" },
   { id: "minimax_cn", name: "MiniMax 国内" },
   { id: "minimax_global", name: "MiniMax Global" },
+  { id: "siliconflow_cn", name: "硅基流动" },
+  { id: "siliconflow_global", name: "SiliconFlow Global" },
+  { id: "openrouter", name: "OpenRouter" },
 ] as const;
 
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;

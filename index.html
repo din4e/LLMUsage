@@ -33,7 +33,7 @@
           <article><span>请求</span><strong id="total-requests">—</strong><small>次调用</small></article>
           <article><span>Token</span><strong id="total-tokens">—</strong><small>输入 + 输出</small></article>
           <article><span>余额/成本</span><strong id="total-cost">—</strong><small>人民币口径</small></article>
-          <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 6</strong><small>已配置供应商</small></article>
+          <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 9</strong><small>已配置供应商</small></article>
         </section>
 
         <section class="section-heading">
@@ -83,11 +83,32 @@
             <div class="quota-cell unavailable"><div><span id="minimax_global-quota-label">冷却状态</span><b id="minimax_global-quota-value">—</b></div><progress id="minimax_global-progress" max="100" value="0">0%</progress><small id="minimax_global-quota-hint">按套餐窗口恢复</small></div>
             <button class="row-action" type="button" data-action="configure" data-provider="minimax_global">配置</button>
           </article>
+
+          <article class="provider-row" data-provider="siliconflow_cn">
+            <div class="provider-identity"><span class="provider-mark siliconflow">S</span><div><h3>硅基流动</h3><p>官方余额 · SiliconFlow</p></div></div>
+            <div class="usage-cell"><span>可用余额</span><strong id="siliconflow_cn-primary">等待配置</strong><small id="siliconflow_cn-secondary">国内站 · 充值与赠金</small></div>
+            <div class="quota-cell unavailable"><span id="siliconflow_cn-quota-label">用量口径</span><strong id="siliconflow_cn-quota-value">余额在线查询</strong><small id="siliconflow_cn-quota-hint">官方用户信息接口</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="siliconflow_cn">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="siliconflow_global">
+            <div class="provider-identity"><span class="provider-mark siliconflow">S</span><div><h3>SiliconFlow Global</h3><p>Official balance · SiliconFlow</p></div></div>
+            <div class="usage-cell"><span>可用余额</span><strong id="siliconflow_global-primary">等待配置</strong><small id="siliconflow_global-secondary">国际站 · 充值与赠金</small></div>
+            <div class="quota-cell unavailable"><span id="siliconflow_global-quota-label">用量口径</span><strong id="siliconflow_global-quota-value">余额在线查询</strong><small id="siliconflow_global-quota-hint">官方用户信息接口</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="siliconflow_global">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="openrouter">
+            <div class="provider-identity"><span class="provider-mark openrouter">O</span><div><h3>OpenRouter</h3><p>Official credits · Management API</p></div></div>
+            <div class="usage-cell"><span>剩余额度</span><strong id="openrouter-primary">等待配置</strong><small id="openrouter-secondary">需要 management key</small></div>
+            <div class="quota-cell unavailable"><span id="openrouter-quota-label">用量口径</span><strong id="openrouter-quota-value">额度在线查询</strong><small id="openrouter-quota-hint">返回 purchased / used credits</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="openrouter">配置</button>
+          </article>
         </section>
 
         <section class="more-providers" id="providers">
           <span>还可接入</span>
-          <ul aria-label="更多供应商"><li>Qwen</li><li>豆包</li><li>OpenAI</li><li>Claude</li><li>Gemini</li><li>OpenRouter</li></ul>
+          <ul aria-label="更多供应商"><li>Qwen</li><li>豆包</li><li>OpenAI</li><li>Claude</li><li>Gemini</li><li>Groq</li></ul>
         </section>
       </main>
     </div>

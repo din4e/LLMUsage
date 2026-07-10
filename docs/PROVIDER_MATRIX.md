@@ -21,6 +21,9 @@ This matrix is the implementation contract for online provider adapters. A provi
 | Kimi Code | Unverified public API | Console only | Console only; documented 5-hour rolling window and 7-day quota refresh | Included in subscription | Do not scrape; show setup limitation until a public API exists |
 | GLM China API / Coding Plan | Community-verified API-key endpoints | Community-verified model and tool usage endpoints | Community-verified quota endpoint returns reset timestamps; official FAQ documents 5-hour and weekly limits | Included in subscription or response-derived estimate | Experimental online adapter with strict validation and graceful fallback |
 | DeepSeek China API | Official API | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
+| SiliconFlow China API | Official API: user info balance | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
+| SiliconFlow Global API | Official API: user info balance | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
+| OpenRouter Global | Official API: credits | Response-derived / dashboard analytics | Response-derived | Official credits remaining; request-level estimate from usage | Credits adapter plus optional observer |
 | Volcengine Ark / Doubao China | Official billing API | Official `GetInferenceUsage` API | API/response-derived where available | Official billing API | First-class online usage and billing adapter |
 | Alibaba Model Studio / Qwen China | Cloud billing API candidate; contract not yet verified | Console and bill data documented; public query contract not yet verified | Unverified | Billing data is generated with a documented delay | Keep disabled until Alibaba Cloud billing API contract and signing are tested |
 
@@ -44,6 +47,19 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Balance endpoint: `GET https://api.deepseek.com/user/balance`
 - Returns total available balance and balance components.
 - The inference API is OpenAI compatible and returns usage for observed calls; account-wide daily usage remains a separate console capability unless a public endpoint is verified.
+
+### SiliconFlow API
+
+- China user-info endpoint: `GET https://api.siliconflow.cn/v1/user/info`
+- Global user-info endpoint: `GET https://api.siliconflow.com/v1/user/info`
+- Authentication: `Authorization: Bearer <SILICONFLOW_API_KEY>`.
+- Response exposes `balance`, `chargeBalance`, `totalBalance`, and account status.
+
+### OpenRouter API
+
+- Credits endpoint: `GET https://openrouter.ai/api/v1/credits`
+- Authentication: `Authorization: Bearer <OPENROUTER_MANAGEMENT_KEY>`.
+- Response exposes total purchased credits and total usage. Remaining USD credits are calculated as `total_credits - total_usage`.
 
 ### Volcengine Ark / Doubao China
 
@@ -102,7 +118,7 @@ These endpoints are not currently documented in GLM's public official API refere
 - MiniMax international Token Plan endpoint and response schema.
 - Alibaba Cloud Model Studio usage/billing API action names, signing, granularity, and delay.
 - Tencent Hunyuan, Baidu Qianfan, SiliconFlow account-wide usage and billing APIs.
-- OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq, Together AI, and xAI organization usage/cost endpoints and required admin credentials.
+- OpenAI, Anthropic, Gemini, Mistral, Groq, Together AI, and xAI organization usage/cost endpoints and required admin credentials.
 
 ## Official Sources
 
@@ -114,6 +130,8 @@ These endpoints are not currently documented in GLM's public official API refere
 - GLM Coding Plan FAQ: https://docs.bigmodel.cn/cn/coding-plan/faq
 - Community GLM monitor reference (MIT): https://github.com/LaughSmiles/glm-key-monitor
 - DeepSeek balance API: https://api-docs.deepseek.com/zh-cn/api/get-user-balance
+- SiliconFlow user info API: https://docs.siliconflow.com/en/api-reference/userinfo/get-user-info
+- OpenRouter credits API: https://openrouter.ai/docs/api-reference/credits/get-credits
 - Volcengine Ark usage API: https://www.volcengine.com/docs/82379/2116766
 - Volcengine billing API overview: https://www.volcengine.com/docs/6269/1165275
 - Alibaba Model Studio billing guide: https://help.aliyun.com/zh/model-studio/bill-query-and-cost-management

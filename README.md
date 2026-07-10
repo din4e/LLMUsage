@@ -12,6 +12,9 @@ Windows-first desktop dashboard for online LLM account usage, plan quota, balanc
 | DeepSeek | China | Official balance endpoint | Available CNY balance, topped-up balance, granted balance |
 | MiniMax | China | Experimental Token Plan remains endpoint | Plan usage percentage and reset time when returned |
 | MiniMax | Global | Experimental Token Plan remains endpoint | Plan usage percentage and reset time when returned |
+| SiliconFlow | China | Official user info endpoint | Available CNY balance, topped-up balance, free balance |
+| SiliconFlow | Global | Official user info endpoint | Available balance with the same contract |
+| OpenRouter | Global | Official credits endpoint | Remaining USD credits from total purchased minus usage |
 
 The app does not scrape web consoles, cookies, browser storage, prompts, responses, or authorization headers. API keys are encrypted with Windows DPAPI and stored per provider under the current Windows user.
 

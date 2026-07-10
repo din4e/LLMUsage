@@ -9,6 +9,9 @@ pub enum OnlineProvider {
     DeepSeek,
     MiniMaxCn,
     MiniMaxGlobal,
+    SiliconFlowCn,
+    SiliconFlowGlobal,
+    OpenRouter,
 }
 
 impl OnlineProvider {
@@ -19,6 +22,9 @@ impl OnlineProvider {
             "deepseek" => Some(Self::DeepSeek),
             "minimax_cn" => Some(Self::MiniMaxCn),
             "minimax_global" => Some(Self::MiniMaxGlobal),
+            "siliconflow_cn" => Some(Self::SiliconFlowCn),
+            "siliconflow_global" => Some(Self::SiliconFlowGlobal),
+            "openrouter" => Some(Self::OpenRouter),
             _ => None,
         }
     }
@@ -30,6 +36,9 @@ impl OnlineProvider {
             Self::DeepSeek => "deepseek",
             Self::MiniMaxCn => "minimax_cn",
             Self::MiniMaxGlobal => "minimax_global",
+            Self::SiliconFlowCn => "siliconflow_cn",
+            Self::SiliconFlowGlobal => "siliconflow_global",
+            Self::OpenRouter => "openrouter",
         }
     }
 
@@ -40,6 +49,9 @@ impl OnlineProvider {
             Self::DeepSeek => "DeepSeek",
             Self::MiniMaxCn => "MiniMax 国内",
             Self::MiniMaxGlobal => "MiniMax Global",
+            Self::SiliconFlowCn => "硅基流动",
+            Self::SiliconFlowGlobal => "SiliconFlow Global",
+            Self::OpenRouter => "OpenRouter",
         }
     }
 
@@ -50,6 +62,9 @@ impl OnlineProvider {
             Self::DeepSeek => "https://api.deepseek.com/user/balance",
             Self::MiniMaxCn => "https://www.minimaxi.com/v1/token_plan/remains",
             Self::MiniMaxGlobal => "https://www.minimax.io/v1/token_plan/remains",
+            Self::SiliconFlowCn => "https://api.siliconflow.cn/v1/user/info",
+            Self::SiliconFlowGlobal => "https://api.siliconflow.com/v1/user/info",
+            Self::OpenRouter => "https://openrouter.ai/api/v1/credits",
         }
     }
 
@@ -57,6 +72,8 @@ impl OnlineProvider {
         match self {
             Self::KimiCn | Self::KimiGlobal => "official_balance",
             Self::DeepSeek => "official_balance",
+            Self::SiliconFlowCn | Self::SiliconFlowGlobal => "official_balance",
+            Self::OpenRouter => "official_credits",
             Self::MiniMaxCn | Self::MiniMaxGlobal => "experimental_token_plan",
         }
     }
@@ -178,6 +195,10 @@ pub fn parse_snapshot(provider: OnlineProvider, json: &str) -> Result<OnlineSnap
         OnlineProvider::KimiCn | OnlineProvider::KimiGlobal => parse_kimi(provider, json),
         OnlineProvider::DeepSeek => parse_deepseek(provider, json),
         OnlineProvider::MiniMaxCn | OnlineProvider::MiniMaxGlobal => parse_minimax(provider, json),
+        OnlineProvider::SiliconFlowCn | OnlineProvider::SiliconFlowGlobal => {
+            parse_siliconflow(provider, json)
+        }
+        OnlineProvider::OpenRouter => parse_openrouter(provider, json),
     }
 }
 
@@ -287,6 +308,76 @@ fn parse_minimax(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot,
     })
 }
 
+#[derive(Deserialize)]
+struct SiliconFlowUserResponse {
+    code: i64,
+    status: bool,
+    data: Option<SiliconFlowUser>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SiliconFlowUser {
+    balance: String,
+    charge_balance: String,
+    total_balance: String,
+    status: String,
+}
+
+fn parse_siliconflow(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, OnlineError> {
+    let response: SiliconFlowUserResponse =
+        serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    if response.code != 20000 || !response.status {
+        return Err(OnlineError::ApiRejected);
+    }
+    let data = response.data.ok_or(OnlineError::SchemaMismatch)?;
+    let total = parse_money(&data.total_balance)?;
+    let free = parse_money(&data.balance)?;
+    let charged = parse_money(&data.charge_balance)?;
+    let mut snapshot = balance_snapshot(
+        provider,
+        total,
+        "CNY",
+        format!("充值 ¥{charged:.2} · 赠金 ¥{free:.2}"),
+    );
+    if data.status != "normal" {
+        snapshot.secondary_value = format!("账号状态：{}", data.status);
+    }
+    Ok(snapshot)
+}
+
+#[derive(Deserialize)]
+struct OpenRouterCreditsResponse {
+    data: OpenRouterCredits,
+}
+
+#[derive(Deserialize)]
+struct OpenRouterCredits {
+    total_credits: f64,
+    total_usage: f64,
+}
+
+fn parse_openrouter(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, OnlineError> {
+    let response: OpenRouterCreditsResponse =
+        serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    if !response.data.total_credits.is_finite()
+        || !response.data.total_usage.is_finite()
+        || response.data.total_credits < response.data.total_usage
+    {
+        return Err(OnlineError::SchemaMismatch);
+    }
+    let remaining = response.data.total_credits - response.data.total_usage;
+    Ok(balance_snapshot(
+        provider,
+        remaining,
+        "USD",
+        format!(
+            "总额 ${:.2} · 已用 ${:.2}",
+            response.data.total_credits, response.data.total_usage
+        ),
+    ))
+}
+
 fn balance_snapshot(
     provider: OnlineProvider,
     amount: f64,
@@ -309,8 +400,16 @@ fn balance_snapshot(
         total_tokens: None,
         estimated_cost_cny: None,
         primary_label: "可用余额".to_string(),
-        primary_value: format!("¥{amount:.2}"),
+        primary_value: format_money(amount, currency),
         secondary_value,
+    }
+}
+
+fn format_money(amount: f64, currency: &str) -> String {
+    match currency {
+        "CNY" => format!("¥{amount:.2}"),
+        "USD" => format!("${amount:.2}"),
+        _ => format!("{amount:.2} {currency}"),
     }
 }
 
@@ -472,6 +571,51 @@ mod tests {
         assert_eq!(snapshot.quota_used_percent, Some(37.5));
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
         assert!(snapshot.experimental);
+    }
+
+    #[test]
+    fn parses_siliconflow_user_balance() {
+        let json = r#"{
+          "code": 20000,
+          "message": "success",
+          "status": true,
+          "data": {
+            "id": "user-id",
+            "name": "tester",
+            "image": "",
+            "email": "test@example.com",
+            "balance": "12.50",
+            "chargeBalance": "30.00",
+            "totalBalance": "42.50",
+            "status": "normal"
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::SiliconFlowCn, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "siliconflow_cn");
+        assert_eq!(snapshot.balance_cny, Some(42.5));
+        assert_eq!(snapshot.primary_value, "¥42.50");
+        assert_eq!(snapshot.secondary_value, "充值 ¥30.00 · 赠金 ¥12.50");
+    }
+
+    #[test]
+    fn parses_openrouter_remaining_credits_as_usd() {
+        let json = r#"{"data":{"total_credits":25.0,"total_usage":7.25}}"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::OpenRouter, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "openrouter");
+        assert_eq!(snapshot.balance_cny, None);
+        assert_eq!(
+            snapshot.balance_original,
+            Some(Money {
+                amount: 17.75,
+                currency: "USD".to_string()
+            })
+        );
+        assert_eq!(snapshot.primary_value, "$17.75");
+        assert_eq!(snapshot.source, "official_credits");
     }
 
     #[test]

@@ -68,6 +68,8 @@ h2 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
 .provider-mark.kimi { color: #f6f3ed; background: #3465e9; border-color: #3465e9; }
 .provider-mark.deepseek { color: #f6f3ed; background: #5a6b7f; border-color: #5a6b7f; }
 .provider-mark.minimax { color: #161616; background: #f1a45b; border-color: #f1a45b; }
+.provider-mark.siliconflow { color: #111711; background: #72d6a3; border-color: #72d6a3; }
+.provider-mark.openrouter { color: #111711; background: #d7d9df; border-color: #d7d9df; }
 .provider-identity h3 { margin-bottom: 5px; font-size: 14px; }
 .provider-identity p { margin-bottom: 0; color: var(--muted); font-size: 10px; }
 .usage-cell strong, .quota-cell strong { display: block; margin-bottom: 7px; font-family: "Cascadia Mono", monospace; font-size: 15px; font-weight: 520; }
