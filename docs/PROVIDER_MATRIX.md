@@ -25,7 +25,6 @@ This matrix is the implementation contract for online provider adapters. A provi
 | SiliconFlow Global API | Official API: user info balance | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
 | OpenRouter Global | Official API: credits | Response-derived / dashboard analytics | Response-derived | Official credits remaining; request-level estimate from usage | Credits adapter plus optional observer |
 | Volcengine Ark / Doubao China | Official billing API | Official `GetInferenceUsage` API | API/response-derived where available | Official billing API | First-class online usage and billing adapter |
-| Alibaba Model Studio / Qwen China | Cloud billing API candidate; contract not yet verified | Console and bill data documented; public query contract not yet verified | Unverified | Billing data is generated with a documented delay | Keep disabled until Alibaba Cloud billing API contract and signing are tested |
 | OpenAI / Codex API | Not applicable | Official Organization Usage API with Admin key | API tier limits are separate; personal ChatGPT plan remaining quota is not exposed | Official Organization Costs API in USD | Admin-key adapter; label as API organization data, not ChatGPT subscription quota |
 | Claude Code | Not applicable | Official Claude Code Analytics API with Admin key | Subscription remaining quota is not returned | Estimated cost by model in USD cents | Daily UTC analytics adapter; aggregate without exposing actor email |
 | Gemini Code Assist | Not applicable | Official Cloud Monitoring metrics for API calls and used tokens | Published fixed quota; remaining personal quota is not returned | Not returned by monitoring metrics | Project + explicit OAuth access-token adapter; never read local Google credentials |
@@ -143,7 +142,7 @@ These endpoints are not currently documented in GLM's public official API refere
 - MiniMax international Token Plan endpoint and response schema.
 - Alibaba Cloud Model Studio Coding Plan/Token Plan remaining quota remains console-only and is not queried with plan keys because official terms prohibit custom automated clients.
 - Tencent Hunyuan, Baidu Qianfan, SiliconFlow account-wide usage and billing APIs.
-- OpenAI, Anthropic, Gemini, Mistral, Groq, Together AI, and xAI organization usage/cost endpoints and required admin credentials.
+- Mistral, Groq, Together AI, xAI, Tencent Hunyuan and Baidu Qianfan organization usage/cost endpoints and required admin credentials.
 
 ## Official Sources
 
@@ -165,3 +164,4 @@ These endpoints are not currently documented in GLM's public official API refere
 - Anthropic Claude Code Analytics API: https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api
 - Gemini Code Assist monitoring: https://cloud.google.com/gemini/docs/codeassist/monitor-gemini-code-assist
 - Alibaba Model Studio Prometheus monitoring: https://www.alibabacloud.com/help/en/model-studio/model-telemetry
+- USD/CNY estimate source: https://frankfurter.dev/
