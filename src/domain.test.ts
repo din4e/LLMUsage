@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+import { formatCooldown, formatInteger, summarizeProviders } from "./domain";
+
+describe("formatCooldown", () => {
+  it("formats a future reset using hours and minutes", () => {
+    expect(formatCooldown(1_800_000, 0)).toBe("30 分钟后");
+    expect(formatCooldown(9_000_000, 0)).toBe("2 小时 30 分后");
+  });
+
+  it("reports a reset that has already arrived", () => {
+    expect(formatCooldown(999, 1_000)).toBe("即将恢复");
+  });
+});
+
+describe("formatInteger", () => {
+  it("uses compact Chinese units without losing small values", () => {
+    expect(formatInteger(999)).toBe("999");
+    expect(formatInteger(12_345)).toBe("1.2万");
+    expect(formatInteger(12_345_678)).toBe("1234.6万");
+  });
+});
+
+describe("summarizeProviders", () => {
+  it("only totals metrics that are actually available", () => {
+    expect(
+      summarizeProviders([
+        { requests: 7, totalTokens: 1_000, estimatedCostCny: 0.25 },
+        { requests: null, totalTokens: null, estimatedCostCny: null },
+        { requests: 3, totalTokens: 500, estimatedCostCny: 0.1 },
+      ]),
+    ).toEqual({ requests: 10, totalTokens: 1_500, estimatedCostCny: 0.35 });
+  });
+});
