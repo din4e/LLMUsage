@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111715" />
+    <title>LLM Usage</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail" aria-label="主导航">
+        <a class="brand" href="#dashboard" aria-label="LLM Usage 首页">LU</a>
+        <nav>
+          <a class="nav-item active" href="#dashboard" aria-current="page" aria-label="用量总览">⌁</a>
+          <a class="nav-item" href="#providers" aria-label="供应商设置">◇</a>
+        </nav>
+        <button class="nav-item theme-button" id="theme-toggle" type="button" aria-label="切换明暗主题">◐</button>
+      </aside>
+
+      <main id="dashboard">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">LOCAL · PRIVATE · LIVE</p>
+            <h1>今天的模型用量</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="sync-status" id="sync-status" role="status"><i></i> 数据已就绪</span>
+            <button class="refresh-button" id="refresh-button" type="button">立即同步</button>
+          </div>
+        </header>
+
+        <section class="metric-strip" aria-label="今日总览">
+          <article><span>请求</span><strong id="total-requests">—</strong><small>次调用</small></article>
+          <article><span>Token</span><strong id="total-tokens">—</strong><small>输入 + 输出</small></article>
+          <article><span>预估成本</span><strong id="total-cost">—</strong><small>人民币</small></article>
+          <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 3</strong><small>已配置供应商</small></article>
+        </section>
+
+        <section class="section-heading">
+          <div><p class="eyebrow">PROVIDERS</p><h2>供应商状态</h2></div>
+          <p>在线用量优先 · 实验接口会单独标注</p>
+        </section>
+
+        <section class="provider-list" id="provider-list" aria-label="供应商用量">
+          <article class="provider-row featured" data-provider="glm">
+            <div class="provider-identity"><span class="provider-mark glm">G</span><div><h3>智谱 GLM</h3><p>兼容接口 · Coding Plan</p></div></div>
+            <div class="usage-cell"><span>今日 Token</span><strong id="glm-tokens">等待配置</strong><small id="glm-requests">添加 API Key 后同步</small></div>
+            <div class="quota-cell"><div><span>5 小时窗口</span><b id="glm-percent">—</b></div><progress id="glm-progress" max="100" value="0">0%</progress><small id="glm-cooldown">重置时间未知</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="glm">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="kimi">
+            <div class="provider-identity"><span class="provider-mark kimi">K</span><div><h3>Kimi</h3><p>官方余额 · Moonshot API</p></div></div>
+            <div class="usage-cell"><span>可用余额</span><strong>等待配置</strong><small>支持现金与代金券</small></div>
+            <div class="quota-cell unavailable"><span>用量口径</span><strong>余额在线查询</strong><small>日账单由平台延迟更新</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="kimi">配置</button>
+          </article>
+
+          <article class="provider-row" data-provider="minimax">
+            <div class="provider-identity"><span class="provider-mark minimax">M</span><div><h3>MiniMax</h3><p>官方接口 · Token Plan</p></div></div>
+            <div class="usage-cell"><span>套餐余量</span><strong>等待配置</strong><small>国内站 / 国际站</small></div>
+            <div class="quota-cell unavailable"><span>冷却状态</span><strong>配置后可用</strong><small>按套餐窗口恢复</small></div>
+            <button class="row-action" type="button" data-action="configure" data-provider="minimax">配置</button>
+          </article>
+        </section>
+
+        <section class="more-providers" id="providers">
+          <span>还可接入</span>
+          <ul aria-label="更多供应商"><li>DeepSeek</li><li>Qwen</li><li>豆包</li><li>OpenAI</li><li>Claude</li><li>Gemini</li><li>OpenRouter</li></ul>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="provider-dialog" aria-labelledby="dialog-title">
+      <form method="dialog" id="provider-form">
+        <div class="dialog-heading"><div><p class="eyebrow">SECURE SETUP</p><h2 id="dialog-title">配置供应商</h2></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+        <p class="dialog-copy">密钥仅保存到 Windows 凭据管理器，不会写入数据库或日志。</p>
+        <label for="api-key">API Key</label>
+        <input id="api-key" name="apiKey" type="password" autocomplete="off" spellcheck="false" required placeholder="输入供应商 API Key" />
+        <div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button value="save" id="save-provider" class="refresh-button">保存并同步</button></div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/app.ts"></script>
+  </body>
+</html>
