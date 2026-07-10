@@ -6,15 +6,17 @@
 
 核心用户是同时使用多家模型 API 或 Coding Plan 的个人开发者。应用以供应商官方在线用量、套餐余量和余额接口为第一数据源；本地 OpenAI 兼容代理只用于补足官方接口没有提供的请求级明细，不是使用应用的前提。
 
-## Assumptions to Validate
+## Confirmed Product Decisions
 
 1. 第一目标平台是 Windows 10/11，发布包目标小于 15 MB（不含系统 WebView2）；架构保留 macOS/Linux 可移植性。
 2. “今天用了多少”优先采用供应商官方在线统计，可包含其他客户端产生的用量；若无公开查询接口，则降级显示官方余额或本地可观察调用，并清楚标注口径。
 3. API Key 由用户自行提供，保存在操作系统凭据库，不写入 SQLite、日志或前端存储。
 4. 首发内置 GLM、Kimi、MiniMax，并尽可能覆盖 DeepSeek、Qwen/百炼、豆包/火山方舟、腾讯混元、百度千帆、硅基流动，以及 OpenAI、Anthropic、Gemini、OpenRouter、Mistral、Groq、Together AI、xAI；国内站和国际站分别建模。
-5. 冷却时间优先读取 `Retry-After` 和供应商限流响应头；没有可靠响应头时显示“未知”，不伪造倒计时。
+5. 冷却时间优先读取官方/兼容用量接口的重置时间，其次读取 `Retry-After` 和供应商限流响应头；没有可靠数据时显示“未知”。
 6. 首版提供在线同步与仪表盘；本地代理是可选增强，不拦截或修改其他应用的网络流量。
 7. 同时显示供应商原币成本和按汇率折算的人民币估算；估算值与官方账单值明确区分。
+8. 可采用社区验证的、使用 API Key 鉴权但未被供应商正式公开承诺的端点；必须标为实验性、严格校验并可独立降级，禁止使用网页登录 Cookie。
+9. 外币成本使用每日公开汇率直接换算人民币，并允许界面切换原币/人民币；离线使用上次缓存汇率。
 
 ## Product Scope
 
@@ -176,5 +178,4 @@ pub fn cooldown_deadline(now: DateTime<Utc>, retry_after: &str) -> Option<DateTi
 
 ## Open Questions
 
-1. 对没有公开在线用量 API 的供应商，是否接受显示“仅余额/不可自动查询”，而不使用网页 Cookie 或非公开接口？
-2. 汇率是否接受使用公开汇率服务并缓存每日汇率，还是只允许用户手动设定美元兑人民币汇率？
+None for the first implementation slice. New credential types or browser-session access still require explicit approval.
