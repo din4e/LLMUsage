@@ -74,7 +74,7 @@
     <dialog id="provider-dialog" aria-labelledby="dialog-title">
       <form method="dialog" id="provider-form">
         <div class="dialog-heading"><div><p class="eyebrow">SECURE SETUP</p><h2 id="dialog-title">配置供应商</h2></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
-        <p class="dialog-copy">密钥仅保存到 Windows 凭据管理器，不会写入数据库或日志。</p>
+        <p class="dialog-copy">密钥由 Windows DPAPI 加密，仅当前用户可解密，不会写入数据库或日志。</p>
         <label for="api-key">API Key</label>
         <input id="api-key" name="apiKey" type="password" autocomplete="off" spellcheck="false" required placeholder="输入供应商 API Key" />
         <div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button value="save" id="save-provider" class="refresh-button">保存并同步</button></div>

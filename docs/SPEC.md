@@ -10,7 +10,7 @@
 
 1. 第一目标平台是 Windows 10/11，发布包目标小于 15 MB（不含系统 WebView2）；架构保留 macOS/Linux 可移植性。
 2. “今天用了多少”优先采用供应商官方在线统计，可包含其他客户端产生的用量；若无公开查询接口，则降级显示官方余额或本地可观察调用，并清楚标注口径。
-3. API Key 由用户自行提供，保存在操作系统凭据库，不写入 SQLite、日志或前端存储。
+3. API Key 由用户自行提供，使用 Windows DPAPI 绑定当前用户加密后保存在应用数据目录，不写入 SQLite、日志或前端存储。
 4. 首发内置 GLM、Kimi、MiniMax，并尽可能覆盖 DeepSeek、Qwen/百炼、豆包/火山方舟、腾讯混元、百度千帆、硅基流动，以及 OpenAI、Anthropic、Gemini、OpenRouter、Mistral、Groq、Together AI、xAI；国内站和国际站分别建模。
 5. 冷却时间优先读取官方/兼容用量接口的重置时间，其次读取 `Retry-After` 和供应商限流响应头；没有可靠数据时显示“未知”。
 6. 首版提供在线同步与仪表盘；本地代理是可选增强，不拦截或修改其他应用的网络流量。
@@ -55,7 +55,7 @@
 ### Data and Privacy
 
 - SQLite 只保存供应商非敏感配置、聚合所需请求元数据和应用设置。
-- API Key 存入 Windows Credential Manager（跨平台时映射到系统 keyring）。
+- API Key 在 Windows 使用当前用户级 DPAPI 加密；其他平台发布前映射到各自系统 keyring。
 - 支持清除历史记录与删除供应商凭据。
 - 所有供应商 URL 必须为 HTTPS；仅本地回环代理允许 HTTP。
 

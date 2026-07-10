@@ -1,10 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
 
 const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GlmUsageSnapshot {
     pub plan_level: String,
     pub used_percent: f64,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCooldown, formatInteger, summarizeProviders } from "./domain";
+import { formatCooldown, formatInteger, localDayRange, summarizeProviders } from "./domain";
 
 describe("formatCooldown", () => {
   it("formats a future reset using hours and minutes", () => {
@@ -29,5 +29,14 @@ describe("summarizeProviders", () => {
         { requests: 3, totalTokens: 500, estimatedCostCny: 0.1 },
       ]),
     ).toEqual({ requests: 10, totalTokens: 1_500, estimatedCostCny: 0.35 });
+  });
+});
+
+describe("localDayRange", () => {
+  it("formats the selected local calendar day for GLM monitor queries", () => {
+    expect(localDayRange(new Date(2026, 6, 10, 14, 30))).toEqual({
+      startTime: "2026-07-10 00:00:00",
+      endTime: "2026-07-10 23:59:59",
+    });
   });
 });
