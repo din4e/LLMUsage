@@ -19,8 +19,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 | MiniMax China, Token Plan | Official API: remaining quota | Official API: plan remaining usage | Official API when reset fields are present; documented resource-limit error otherwise | Subscription usage, not per-call RMB cost | First-class online plan adapter |
 | Kimi/Moonshot China API | Official API | Console only; daily billing may update the next morning | Response-derived for inference rate limits | Console only or response-derived estimate | Balance adapter plus optional observer |
 | Kimi Code | Unverified public API | Console only | Console only; documented 5-hour rolling window and 7-day quota refresh | Included in subscription | Do not scrape; show setup limitation until a public API exists |
-| GLM China API | Unverified | Response-derived | Response-derived | Response-derived estimate | Optional observer until official account API is verified |
-| GLM Coding Plan | Unverified public API | Console only | Console only; documented 5-hour and weekly limits | Included in subscription | Do not scrape; show setup limitation until a public API exists |
+| GLM China API / Coding Plan | Community-verified API-key endpoints | Community-verified model and tool usage endpoints | Community-verified quota endpoint returns reset timestamps; official FAQ documents 5-hour and weekly limits | Included in subscription or response-derived estimate | Experimental online adapter with strict validation and graceful fallback |
 | DeepSeek China API | Official API | Console only / response-derived | Response-derived | Response-derived estimate | Balance adapter plus optional observer |
 | Volcengine Ark / Doubao China | Official billing API | Official `GetInferenceUsage` API | API/response-derived where available | Official billing API | First-class online usage and billing adapter |
 | Alibaba Model Studio / Qwen China | Cloud billing API candidate; contract not yet verified | Console and bill data documented; public query contract not yet verified | Unverified | Billing data is generated with a documented delay | Keep disabled until Alibaba Cloud billing API contract and signing are tested |
@@ -53,6 +52,25 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Volcengine Billing Center exposes public APIs including account balance, bill overview, bill details, and daily amortized cost.
 - This adapter needs Volcengine access-key signing rather than a simple model API key.
 
+### GLM China experimental monitor contract
+
+The MIT-licensed `LaughSmiles/glm-key-monitor` project demonstrates three API-key-authenticated endpoints on `https://open.bigmodel.cn`:
+
+- `GET /api/monitor/usage/quota/limit` — quota limits and reset timestamps.
+- `GET /api/monitor/usage/model-usage` — model call counts and token usage for a time range.
+- `GET /api/monitor/usage/tool-usage` — tool usage for a time range.
+
+Requests send the BigModel API key directly in the `Authorization` header and accept optional `startTime` and `endTime` query parameters. The observed quota schema includes a plan `level` and a `limits` array whose entries contain `type`, `percentage`, `nextResetTime`, optional current usage, and optional per-model usage details. The current rolling token window is the `TOKENS_LIMIT` entry with the nearest reset time.
+
+These endpoints are not currently documented in GLM's public official API reference. They therefore remain an **experimental compatibility source**, not an official API capability. Implementation requirements:
+
+1. Validate the full response before persisting or displaying any value.
+2. Never log the request headers or API key.
+3. Apply a conservative refresh interval and exponential backoff.
+4. On 401/403, delete no credentials and show an actionable authentication error.
+5. On 404/schema drift, disable only online monitoring and retain response-derived/local data.
+6. Identify the source in the UI as “兼容接口（非官方承诺）”.
+
 ## Plan Semantics Verified
 
 ### GLM Coding Plan
@@ -79,7 +97,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 
 ## Research Queue
 
-- GLM standard API balance and a public Coding Plan quota endpoint.
+- GLM standard API balance and official publication/stability of the monitor endpoints.
 - Kimi Code public quota endpoint.
 - MiniMax international Token Plan endpoint and response schema.
 - Alibaba Cloud Model Studio usage/billing API action names, signing, granularity, and delay.
@@ -94,6 +112,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Kimi balance and usage help: https://www.kimi.com/help/kimi-api/api-balance-and-usage
 - Kimi Code benefits: https://www.kimi.com/zh-cn/help/kimi-code/benefits
 - GLM Coding Plan FAQ: https://docs.bigmodel.cn/cn/coding-plan/faq
+- Community GLM monitor reference (MIT): https://github.com/LaughSmiles/glm-key-monitor
 - DeepSeek balance API: https://api-docs.deepseek.com/zh-cn/api/get-user-balance
 - Volcengine Ark usage API: https://www.volcengine.com/docs/82379/2116766
 - Volcengine billing API overview: https://www.volcengine.com/docs/6269/1165275
