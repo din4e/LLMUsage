@@ -39,7 +39,7 @@ fn glm_vault(app: &tauri::AppHandle) -> Result<SecretVault, CommandError> {
         .path()
         .app_data_dir()
         .map_err(|_| CommandError::credential())?;
-    Ok(SecretVault::new(&app_data))
+    SecretVault::new(&app_data, "glm").map_err(|_| CommandError::credential())
 }
 
 #[tauri::command(rename_all = "camelCase")]

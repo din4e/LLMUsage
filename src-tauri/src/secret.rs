@@ -40,10 +40,15 @@ pub struct SecretVault {
 }
 
 impl SecretVault {
-    pub fn new(app_data_dir: &Path) -> Self {
-        Self {
-            path: app_data_dir.join("credentials").join("glm.dpapi"),
+    pub fn new(app_data_dir: &Path, provider_id: &str) -> Result<Self, SecretError> {
+        if !is_provider_id(provider_id) {
+            return Err(SecretError::Invalid);
         }
+        Ok(Self {
+            path: app_data_dir
+                .join("credentials")
+                .join(format!("{provider_id}.dpapi")),
+        })
     }
 
     pub fn exists(&self) -> bool {
@@ -70,6 +75,14 @@ impl SecretVault {
         }
         String::from_utf8(unprotect(&ciphertext)?).map_err(|_| SecretError::Invalid)
     }
+}
+
+fn is_provider_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn protect(plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
@@ -162,5 +175,33 @@ mod tests {
     #[test]
     fn rejects_empty_secrets() {
         assert!(matches!(protect(b""), Err(SecretError::Invalid)));
+    }
+
+    #[test]
+    fn stores_each_provider_in_an_isolated_dpapi_file() {
+        let app_data = Path::new("C:/Users/example/AppData/Roaming/LLMUsage");
+
+        let glm = SecretVault::new(app_data, "glm").expect("valid provider id");
+        let kimi = SecretVault::new(app_data, "kimi").expect("valid provider id");
+
+        assert!(glm.path.ends_with(Path::new("credentials/glm.dpapi")));
+        assert!(kimi.path.ends_with(Path::new("credentials/kimi.dpapi")));
+        assert_ne!(glm.path, kimi.path);
+    }
+
+    #[test]
+    fn rejects_provider_ids_that_could_escape_credentials_dir() {
+        assert!(matches!(
+            SecretVault::new(Path::new("C:/app"), "../glm"),
+            Err(SecretError::Invalid)
+        ));
+        assert!(matches!(
+            SecretVault::new(Path::new("C:/app"), "GLM"),
+            Err(SecretError::Invalid)
+        ));
+        assert!(matches!(
+            SecretVault::new(Path::new("C:/app"), ""),
+            Err(SecretError::Invalid)
+        ));
     }
 }
