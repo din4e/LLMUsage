@@ -1,5 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { credentialHint, formatCooldown, formatInteger, localDayRange } from "./domain";
+import { renderProviderDetails } from "./details";
+import {
+  credentialHint,
+  formatCooldown,
+  formatInteger,
+  localDayRange,
+  type OnlineDetailSection,
+} from "./domain";
 import "./styles.css";
 
 interface GlmSnapshot {
@@ -24,6 +31,7 @@ interface OnlineSnapshot {
   primaryLabel: string;
   primaryValue: string;
   secondaryValue: string;
+  detailSections?: OnlineDetailSection[];
 }
 
 interface CommandError {
@@ -115,6 +123,7 @@ function renderOnline(snapshot: OnlineSnapshot) {
     progress.hidden = snapshot.quotaUsedPercent == null;
     if (snapshot.quotaUsedPercent != null) progress.value = snapshot.quotaUsedPercent;
   }
+  renderProviderDetails(snapshot.providerId, snapshot.detailSections);
   renderTotals();
 }
 

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   credentialHint,
   formatCooldown,
+  formatDuration,
   formatInteger,
+  formatQuotaDetailValue,
   localDayRange,
   summarizeProviders,
 } from "./domain";
@@ -53,5 +55,24 @@ describe("credentialHint", () => {
     expect(credentialHint("kimi_cn")).toContain("Moonshot");
     expect(credentialHint("minimax_cn")).toContain("sk-cp-");
     expect(credentialHint("minimax_cn")).toContain("按量 API Key 不可查询");
+  });
+});
+
+describe("quota detail formatting", () => {
+  it("keeps used, remaining and limit values visible", () => {
+    expect(
+      formatQuotaDetailValue({
+        label: "5 小时窗口",
+        used: "7",
+        remaining: "93",
+        limit: "100",
+        unit: "%",
+      }),
+    ).toBe("已用 7% · 剩余 93% · 上限 100%");
+  });
+
+  it("formats provider window durations compactly", () => {
+    expect(formatDuration(600_000)).toBe("10 分钟");
+    expect(formatDuration(9_000_000)).toBe("2 小时 30 分钟");
   });
 });

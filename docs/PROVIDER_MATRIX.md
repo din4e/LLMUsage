@@ -35,6 +35,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Same-region fallback: `GET https://api.minimaxi.com/v1/token_plan/remains`
 - Authentication uses `Authorization: Bearer <MINIMAX_API_KEY>`.
 - The response may expose either used/total counters or a remaining `usage_percent`; the app converts remaining percent to used percent before rendering progress.
+- Every validated `model_remains` item is retained. Current and weekly windows are rendered separately with raw used/remaining/total counts, model name, percentage, start/end timestamps and remaining duration when present.
 - China and international Token Plan keys are separate products and must not share endpoint defaults.
 
 ### Kimi Code
@@ -42,6 +43,8 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Experimental usage endpoint: `GET https://api.kimi.com/coding/v1/usages`
 - Authentication uses the Kimi Code membership API Key, commonly prefixed `sk-kimi-`; it is not interchangeable with a Moonshot Open Platform key.
 - The observed response exposes the weekly quota in `usage` and the rolling 5-hour window in `limits`, with RFC 3339 reset timestamps.
+- Every validated entry in `limits` is retained rather than collapsing the response to one progress bar. `parallel` and `totalQuota` are shown when returned.
+- The `user` object and unknown raw fields are intentionally excluded from the snapshot/cache; only normalized quota data crosses the backend/frontend boundary.
 - The China adapter recognizes the `sk-kimi-` key family and contacts only the Kimi Code endpoint. Other Kimi China keys use the official Moonshot balance endpoint, preventing a credential from being sent across the two product surfaces.
 
 ### Kimi/Moonshot China API

@@ -4,6 +4,24 @@ export interface ProviderMetrics {
   estimatedCostCny: number | null;
 }
 
+export interface OnlineDetailSection {
+  title: string;
+  entries: OnlineDetailEntry[];
+}
+
+export interface OnlineDetailEntry {
+  label: string;
+  used?: string | null;
+  remaining?: string | null;
+  limit?: string | null;
+  unit: string;
+  usedPercent?: number | null;
+  window?: string | null;
+  startAtMs?: number | null;
+  resetAtMs?: number | null;
+  remainingMs?: number | null;
+}
+
 export function localDayRange(date = new Date()): { startTime: string; endTime: string } {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -28,6 +46,27 @@ export function formatInteger(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "—";
   if (value < 10_000) return Math.round(value).toLocaleString("zh-CN");
   return `${(value / 10_000).toFixed(1)}万`;
+}
+
+export function formatQuotaDetailValue(entry: OnlineDetailEntry): string {
+  const values: string[] = [];
+  if (entry.used != null) values.push(`已用 ${entry.used}${entry.unit}`);
+  if (entry.remaining != null) values.push(`剩余 ${entry.remaining}${entry.unit}`);
+  if (entry.limit != null) values.push(`上限 ${entry.limit}${entry.unit}`);
+  return values.join(" · ");
+}
+
+export function formatDuration(durationMs: number): string {
+  const totalMinutes = Math.max(0, Math.floor(durationMs / 60_000));
+  if (totalMinutes < 1) return `${Math.max(0, Math.floor(durationMs / 1_000))} 秒`;
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+  return [
+    days > 0 ? `${days} 天` : "",
+    hours > 0 ? `${hours} 小时` : "",
+    minutes > 0 ? `${minutes} 分钟` : "",
+  ].filter(Boolean).join(" ");
 }
 
 export function credentialHint(providerId: string): string {

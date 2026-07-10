@@ -55,6 +55,7 @@
             <div class="usage-cell"><span>额度状态</span><strong id="kimi_cn-primary">等待配置</strong><small id="kimi_cn-secondary">支持 sk-kimi 与 Moonshot Key</small></div>
             <div class="quota-cell"><div><span id="kimi_cn-quota-label">5 小时窗口</span><b id="kimi_cn-quota-value">—</b></div><progress id="kimi_cn-progress" max="100" value="0">0%</progress><small id="kimi_cn-quota-hint">会员 Key 查询在线额度</small></div>
             <button class="row-action" type="button" data-action="configure" data-provider="kimi_cn">配置</button>
+            <div class="provider-details" id="kimi_cn-details" aria-label="Kimi 完整额度明细" hidden></div>
           </article>
 
           <article class="provider-row" data-provider="kimi_global">
@@ -76,6 +77,7 @@
             <div class="usage-cell"><span>套餐用量</span><strong id="minimax_cn-primary">等待配置</strong><small id="minimax_cn-secondary">需要 sk-cp 订阅 Key</small></div>
             <div class="quota-cell"><div><span id="minimax_cn-quota-label">套餐窗口</span><b id="minimax_cn-quota-value">—</b></div><progress id="minimax_cn-progress" max="100" value="0">0%</progress><small id="minimax_cn-quota-hint">官方 www / API 域名回退</small></div>
             <button class="row-action" type="button" data-action="configure" data-provider="minimax_cn">配置</button>
+            <div class="provider-details" id="minimax_cn-details" aria-label="MiniMax 国内完整额度明细" hidden></div>
           </article>
 
           <article class="provider-row" data-provider="minimax_global">
@@ -83,6 +85,7 @@
             <div class="usage-cell"><span>套餐余量</span><strong id="minimax_global-primary">等待配置</strong><small id="minimax_global-secondary">国际站 · 实验接口</small></div>
             <div class="quota-cell unavailable"><div><span id="minimax_global-quota-label">冷却状态</span><b id="minimax_global-quota-value">—</b></div><progress id="minimax_global-progress" max="100" value="0">0%</progress><small id="minimax_global-quota-hint">按套餐窗口恢复</small></div>
             <button class="row-action" type="button" data-action="configure" data-provider="minimax_global">配置</button>
+            <div class="provider-details" id="minimax_global-details" aria-label="MiniMax Global 完整额度明细" hidden></div>
           </article>
 
           <article class="provider-row" data-provider="siliconflow_cn">

@@ -424,7 +424,11 @@ fn kimi_detail_sections(
             timestamp_field(weekly, "resetTime"),
         ));
     }
-    for (index, limit) in limits.iter().enumerate() {
+    for (index, limit) in limits
+        .iter()
+        .take(MAX_DETAIL_ENTRIES.saturating_sub(windows.len()))
+        .enumerate()
+    {
         let Some(detail) = limit.get("detail") else {
             continue;
         };
@@ -833,7 +837,27 @@ fn minimax_detail_sections(value: &Value) -> Vec<OnlineDetailSection> {
     let mut entries = Vec::new();
     collect_minimax_detail_entries(value, &mut entries);
     if entries.is_empty() {
-        Vec::new()
+        let remaining =
+            find_f64_key(value, "usage_percent").or_else(|| find_f64_key(value, "usagePercent"));
+        let Some(remaining) = remaining.filter(|value| (0.0..=100.0).contains(value)) else {
+            return Vec::new();
+        };
+        let used = 100.0 - remaining;
+        vec![OnlineDetailSection {
+            title: "套餐额度".to_string(),
+            entries: vec![OnlineDetailEntry {
+                label: "套餐 · 套餐用量".to_string(),
+                used: Some(format_detail_number(used)),
+                remaining: Some(format_detail_number(remaining)),
+                limit: Some("100".to_string()),
+                unit: "%".to_string(),
+                used_percent: Some(used),
+                window: None,
+                start_at_ms: None,
+                reset_at_ms: find_reset_timestamp(value),
+                remaining_ms: None,
+            }],
+        }]
     } else {
         vec![OnlineDetailSection {
             title: "模型额度".to_string(),
@@ -842,7 +866,12 @@ fn minimax_detail_sections(value: &Value) -> Vec<OnlineDetailSection> {
     }
 }
 
+const MAX_DETAIL_ENTRIES: usize = 256;
+
 fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailEntry>) {
+    if entries.len() >= MAX_DETAIL_ENTRIES {
+        return;
+    }
     match value {
         Value::Object(map) => {
             let model = minimax_model_label(map);
@@ -853,7 +882,9 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                 "current_interval_total_count",
                 true,
             ) {
-                entries.push(entry);
+                if entries.len() < MAX_DETAIL_ENTRIES {
+                    entries.push(entry);
+                }
             }
             if let Some(entry) = minimax_count_detail_entry(
                 format!("{model} · 周额度"),
@@ -862,7 +893,9 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                 "current_weekly_total_count",
                 false,
             ) {
-                entries.push(entry);
+                if entries.len() < MAX_DETAIL_ENTRIES {
+                    entries.push(entry);
+                }
             }
             if !map.contains_key("current_interval_usage_count")
                 && !map.contains_key("current_weekly_usage_count")
@@ -874,16 +907,24 @@ fn collect_minimax_detail_entries(value: &Value, entries: &mut Vec<OnlineDetailE
                     "total_count",
                     true,
                 ) {
-                    entries.push(entry);
+                    if entries.len() < MAX_DETAIL_ENTRIES {
+                        entries.push(entry);
+                    }
                 }
             }
             for child in map.values() {
                 collect_minimax_detail_entries(child, entries);
+                if entries.len() >= MAX_DETAIL_ENTRIES {
+                    break;
+                }
             }
         }
         Value::Array(items) => {
             for item in items {
                 collect_minimax_detail_entries(item, entries);
+                if entries.len() >= MAX_DETAIL_ENTRIES {
+                    break;
+                }
             }
         }
         _ => {}
@@ -1379,6 +1420,37 @@ mod tests {
         assert_eq!(snapshot.primary_value, "27.5%");
         assert_eq!(snapshot.secondary_value, "剩余 72.5%");
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
+        assert_eq!(snapshot.detail_sections.len(), 1);
+        let detail = &snapshot.detail_sections[0].entries[0];
+        assert_eq!(detail.label, "套餐 · 套餐用量");
+        assert_eq!(detail.used.as_deref(), Some("27.5"));
+        assert_eq!(detail.remaining.as_deref(), Some("72.5"));
+        assert_eq!(detail.limit.as_deref(), Some("100"));
+        assert_eq!(detail.unit, "%");
+        assert_eq!(detail.used_percent, Some(27.5));
+        assert_eq!(detail.reset_at_ms, Some(1_783_686_600_000));
+    }
+
+    #[test]
+    fn bounds_untrusted_minimax_detail_arrays() {
+        let model_remains = (0..300)
+            .map(|index| {
+                serde_json::json!({
+                    "model_name": format!("model-{index}"),
+                    "current_interval_total_count": 100,
+                    "current_interval_usage_count": 1
+                })
+            })
+            .collect::<Vec<_>>();
+        let json = serde_json::json!({
+            "model_remains": model_remains,
+            "base_resp": {"status_code": 0, "status_msg": "success"}
+        })
+        .to_string();
+
+        let snapshot = parse_snapshot(OnlineProvider::MiniMaxCn, &json).expect("snapshot");
+
+        assert_eq!(snapshot.detail_sections[0].entries.len(), 256);
     }
 
     #[test]
