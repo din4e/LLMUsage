@@ -1118,8 +1118,8 @@ fn parse_minimax(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot,
         requests: None,
         total_tokens: None,
         estimated_cost_cny: None,
-        primary_label: "套餐用量".to_string(),
-        primary_value: format!("{:.1}%", quota.used_percent),
+        primary_label: "套餐剩余".to_string(),
+        primary_value: format!("{:.1}%", 100.0 - quota.used_percent),
         secondary_value: quota.detail,
         detail_sections,
     })
@@ -2580,7 +2580,8 @@ mod tests {
 
         assert_eq!(snapshot.provider_id, "minimax_cn");
         assert_eq!(snapshot.quota_used_percent, Some(27.5));
-        assert_eq!(snapshot.primary_value, "27.5%");
+        assert_eq!(snapshot.primary_label, "套餐剩余");
+        assert_eq!(snapshot.primary_value, "72.5%");
         assert_eq!(snapshot.secondary_value, "剩余 72.5%");
         assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_783_686_600_000));
         assert_eq!(snapshot.detail_sections.len(), 1);
