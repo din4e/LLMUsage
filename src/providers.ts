@@ -1,4 +1,3 @@
-import chatGlmLogo from "@lobehub/icons-static-svg/icons/chatglm-color.svg";
 import claudeCodeLogo from "@lobehub/icons-static-svg/icons/claudecode-color.svg";
 import codexLogo from "@lobehub/icons-static-svg/icons/codex-color.svg";
 import deepSeekLogo from "@lobehub/icons-static-svg/icons/deepseek-color.svg";
@@ -8,6 +7,7 @@ import miniMaxLogo from "@lobehub/icons-static-svg/icons/minimax-color.svg";
 import openRouterLogo from "@lobehub/icons-static-svg/icons/openrouter.svg";
 import qwenLogo from "@lobehub/icons-static-svg/icons/qwen-color.svg";
 import siliconCloudLogo from "@lobehub/icons-static-svg/icons/siliconcloud-color.svg";
+import zhipuLogo from "@lobehub/icons-static-svg/icons/zhipu-color.svg";
 
 export interface ProviderField {
   id: string;
@@ -39,7 +39,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "glm",
     name: "智谱 GLM",
     subtitle: "Coding Plan · 兼容监控",
-    logo: chatGlmLogo,
+    logo: zhipuLogo,
     credentialHint: "使用智谱开放平台 API Key；完整密钥仅交给 Rust 后端并由 Windows DPAPI 加密。",
     fields: [apiKeyField()],
   },

@@ -24,6 +24,10 @@ describe("provider catalog", () => {
     }
   });
 
+  it("uses the Zhipu brand icon for GLM", () => {
+    expect(providerDefinitions.find((provider) => provider.id === "glm")?.logo).toContain("Zhipu");
+  });
+
   it("keeps configured and unconfigured providers in separate views", () => {
     const configured = new Set(["glm", "minimax_cn", "gemini"]);
 
