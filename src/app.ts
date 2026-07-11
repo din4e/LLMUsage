@@ -15,6 +15,7 @@ import {
   unconfiguredProviders,
   type ProviderDefinition,
 } from "./providers";
+import { initializeWindowControls } from "./window-controls";
 import "./styles.css";
 
 interface GlmSnapshot {
@@ -139,7 +140,7 @@ function createProviderRow(provider: ProviderDefinition): HTMLElement {
   configure.type = "button";
   configure.dataset.action = "configure";
   configure.dataset.provider = provider.id;
-  configure.textContent = "更新";
+  configure.textContent = "修改配置";
 
   const details = document.createElement("div");
   details.className = "provider-details";
@@ -412,6 +413,14 @@ autoSyncInterval?.addEventListener("change", () => {
 document.addEventListener("click", (event) => {
   const button = (event.target as Element | null)?.closest<HTMLButtonElement>("button[data-action]");
   if (!button) return;
+  if (button.dataset.action === "close-provider-dialog") {
+    dialog?.close();
+    return;
+  }
+  if (button.dataset.action === "close-catalog-dialog") {
+    catalogDialog?.close();
+    return;
+  }
   if (button.dataset.action === "open-catalog") {
     renderProviderCatalog();
     catalogDialog?.showModal();
@@ -494,6 +503,7 @@ providerForm?.addEventListener("submit", async (event) => {
 
 dialog?.addEventListener("close", () => credentialFields?.replaceChildren());
 window.setInterval(updateCooldown, 30_000);
+void initializeWindowControls();
 initializeProviderRows();
 void (async () => {
   const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");

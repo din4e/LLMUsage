@@ -1,13 +1,32 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-light>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111715" />
+    <meta name="theme-color" content="#eef1eb" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23b8ef72'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='13' font-family='Arial' font-weight='700' fill='%23111711'%3ELU%3C/text%3E%3C/svg%3E" />
     <title>LLM Usage</title>
   </head>
   <body>
+    <header class="window-header" id="window-header">
+      <div class="window-drag-region" data-tauri-drag-region>
+        <span class="window-app-symbol" aria-hidden="true">◇</span>
+        <strong>LLM Usage</strong>
+        <span class="window-runtime"><i></i> LOCAL RUNTIME</span>
+      </div>
+      <div class="window-controls" aria-label="窗口控制">
+        <button type="button" data-window-action="minimize" aria-label="最小化">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8" /></svg>
+        </button>
+        <button type="button" data-window-action="maximize" data-maximized="false" aria-label="最大化">
+          <svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
+          <svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3h5v5M3 4h5v5H3z" /></svg>
+        </button>
+        <button class="window-close" type="button" data-window-action="close" aria-label="关闭窗口">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6m0-6L3 9" /></svg>
+        </button>
+      </div>
+    </header>
     <div class="app-shell">
       <aside class="rail" aria-label="主导航">
         <a class="brand" href="#dashboard" aria-label="LLM Usage 首页">LU</a>
@@ -15,7 +34,7 @@
           <a class="nav-item active" href="#dashboard" aria-current="page" aria-label="用量总览">⌁</a>
           <a class="nav-item" href="#providers" aria-label="供应商设置">◇</a>
         </nav>
-        <button class="nav-item theme-button" id="theme-toggle" type="button" aria-label="切换明暗主题">◐</button>
+        <button class="nav-item theme-button" id="theme-toggle" type="button" aria-label="切换深色主题">◐</button>
       </aside>
 
       <main id="dashboard">
@@ -56,17 +75,17 @@
     </div>
 
     <dialog id="provider-dialog" aria-labelledby="dialog-title">
-      <form method="dialog" id="provider-form">
-        <div class="dialog-heading"><div><p class="eyebrow">SECURE SETUP</p><h2 id="dialog-title">配置供应商</h2></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+      <form id="provider-form">
+        <div class="dialog-heading"><div><p class="eyebrow">SECURE SETUP</p><h2 id="dialog-title">配置供应商</h2></div><button type="button" class="close-button" data-action="close-provider-dialog" aria-label="关闭">×</button></div>
         <p class="dialog-copy" id="dialog-copy">密钥由 Windows DPAPI 加密，仅当前用户可解密，不会写入数据库或日志。</p>
         <div id="credential-fields"></div>
-        <div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button value="save" id="save-provider" class="refresh-button">保存并同步</button></div>
+        <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-provider-dialog">取消</button><button type="submit" id="save-provider" class="refresh-button">保存并同步</button></div>
       </form>
     </dialog>
 
     <dialog id="catalog-dialog" aria-labelledby="catalog-title">
-      <form method="dialog" class="catalog-form">
-        <div class="dialog-heading"><div><p class="eyebrow">PROVIDER CATALOG</p><h2 id="catalog-title">添加供应商</h2></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+      <form class="catalog-form">
+        <div class="dialog-heading"><div><p class="eyebrow">PROVIDER CATALOG</p><h2 id="catalog-title">添加供应商</h2></div><button type="button" class="close-button" data-action="close-catalog-dialog" aria-label="关闭">×</button></div>
         <p class="dialog-copy">只展示真实可查询的在线能力；不同地区和凭据类型分开配置。</p>
         <div class="provider-catalog" id="provider-catalog"></div>
       </form>
