@@ -91,9 +91,10 @@ function createProviderRow(provider: ProviderDefinition): HTMLElement {
 
   const identity = document.createElement("div");
   identity.className = "provider-identity";
-  const mark = document.createElement("span");
-  mark.className = `provider-mark ${provider.markClass}`;
-  mark.textContent = provider.mark;
+  const mark = document.createElement("img");
+  mark.className = "provider-mark";
+  mark.src = provider.logo;
+  mark.alt = `${provider.name} 图标`;
   const identityCopy = document.createElement("div");
   const heading = document.createElement("h3");
   heading.textContent = provider.name;
@@ -181,11 +182,18 @@ function renderProviderCatalog() {
     button.className = "catalog-item";
     button.dataset.action = "configure";
     button.dataset.provider = provider.id;
+    const mark = document.createElement("img");
+    mark.className = "catalog-mark";
+    mark.src = provider.logo;
+    mark.alt = "";
     const name = document.createElement("strong");
     name.textContent = provider.name;
     const subtitle = document.createElement("span");
     subtitle.textContent = provider.subtitle;
-    button.append(name, subtitle);
+    const copy = document.createElement("span");
+    copy.className = "catalog-copy";
+    copy.append(name, subtitle);
+    button.append(mark, copy);
     providerCatalog.append(button);
   }
 }

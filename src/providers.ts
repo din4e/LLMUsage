@@ -1,3 +1,14 @@
+import chatGlmLogo from "@lobehub/icons-static-svg/icons/chatglm-color.svg";
+import claudeCodeLogo from "@lobehub/icons-static-svg/icons/claudecode-color.svg";
+import codexLogo from "@lobehub/icons-static-svg/icons/codex-color.svg";
+import deepSeekLogo from "@lobehub/icons-static-svg/icons/deepseek-color.svg";
+import geminiLogo from "@lobehub/icons-static-svg/icons/gemini-color.svg";
+import kimiLogo from "@lobehub/icons-static-svg/icons/kimi-color.svg";
+import miniMaxLogo from "@lobehub/icons-static-svg/icons/minimax-color.svg";
+import openRouterLogo from "@lobehub/icons-static-svg/icons/openrouter.svg";
+import qwenLogo from "@lobehub/icons-static-svg/icons/qwen-color.svg";
+import siliconCloudLogo from "@lobehub/icons-static-svg/icons/siliconcloud-color.svg";
+
 export interface ProviderField {
   id: string;
   label: string;
@@ -10,8 +21,7 @@ export interface ProviderDefinition {
   id: string;
   name: string;
   subtitle: string;
-  mark: string;
-  markClass: string;
+  logo: string;
   credentialHint: string;
   fields: ProviderField[];
 }
@@ -29,8 +39,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "glm",
     name: "智谱 GLM",
     subtitle: "Coding Plan · 兼容监控",
-    mark: "G",
-    markClass: "glm",
+    logo: chatGlmLogo,
     credentialHint: "使用智谱开放平台 API Key；完整密钥仅交给 Rust 后端并由 Windows DPAPI 加密。",
     fields: [apiKeyField()],
   },
@@ -38,8 +47,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "kimi_cn",
     name: "Kimi Code",
     subtitle: "中国 · 会员额度 / API 余额",
-    mark: "K",
-    markClass: "kimi",
+    logo: kimiLogo,
     credentialHint: "会员额度请使用 sk-kimi- Key；Moonshot 开放平台 Key 会自动查询 API 余额。",
     fields: [apiKeyField()],
   },
@@ -47,8 +55,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "kimi_global",
     name: "Kimi Global",
     subtitle: "国际 · API 余额",
-    mark: "K",
-    markClass: "kimi",
+    logo: kimiLogo,
     credentialHint: "使用 Moonshot AI 国际站 API Key。",
     fields: [apiKeyField()],
   },
@@ -56,8 +63,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "deepseek",
     name: "DeepSeek",
     subtitle: "官方余额",
-    mark: "D",
-    markClass: "deepseek",
+    logo: deepSeekLogo,
     credentialHint: "使用 DeepSeek API Platform Key；当前在线能力为官方余额。",
     fields: [apiKeyField()],
   },
@@ -65,8 +71,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "minimax_cn",
     name: "MiniMax 国内",
     subtitle: "Token Plan · 全资源额度",
-    mark: "M",
-    markClass: "minimax",
+    logo: miniMaxLogo,
     credentialHint: "使用 Token Plan 订阅 Key（通常以 sk-cp- 开头），普通按量 API Key 无法查询套餐额度。",
     fields: [apiKeyField()],
   },
@@ -74,8 +79,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "minimax_global",
     name: "MiniMax Global",
     subtitle: "Token Plan · All resources",
-    mark: "M",
-    markClass: "minimax",
+    logo: miniMaxLogo,
     credentialHint: "使用 MiniMax Global Token Plan Key；国内与国际 Key 不互通。",
     fields: [apiKeyField()],
   },
@@ -83,8 +87,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "siliconflow_cn",
     name: "硅基流动",
     subtitle: "中国 · 官方余额",
-    mark: "S",
-    markClass: "siliconflow",
+    logo: siliconCloudLogo,
     credentialHint: "使用 SiliconFlow 中国站 API Key。",
     fields: [apiKeyField()],
   },
@@ -92,8 +95,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "siliconflow_global",
     name: "SiliconFlow Global",
     subtitle: "International · Official balance",
-    mark: "S",
-    markClass: "siliconflow",
+    logo: siliconCloudLogo,
     credentialHint: "使用 SiliconFlow 国际站 API Key。",
     fields: [apiKeyField()],
   },
@@ -101,8 +103,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "openrouter",
     name: "OpenRouter",
     subtitle: "Management credits",
-    mark: "O",
-    markClass: "openrouter",
+    logo: openRouterLogo,
     credentialHint: "使用 OpenRouter Management Key 查询 purchased / used credits。",
     fields: [apiKeyField("Management Key")],
   },
@@ -110,8 +111,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "openai_codex",
     name: "OpenAI / Codex API",
     subtitle: "组织用量与成本 · 非 ChatGPT 套餐",
-    mark: "O",
-    markClass: "openai",
+    logo: codexLogo,
     credentialHint: "需要 OpenAI Organization Admin API Key。统计 API 组织内的 Codex/模型用量与成本，不代表 ChatGPT 个人订阅剩余额度。",
     fields: [apiKeyField("Admin API Key", "sk-admin-…")],
   },
@@ -119,8 +119,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "claude_code",
     name: "Claude Code",
     subtitle: "官方日汇总 · Admin Analytics",
-    mark: "C",
-    markClass: "claude",
+    logo: claudeCodeLogo,
     credentialHint: "需要 Anthropic Admin API Key（sk-ant-admin01-…）。个人 Pro/Max 套餐没有公开的剩余额度 API。",
     fields: [apiKeyField("Admin API Key", "sk-ant-admin01-…")],
   },
@@ -128,8 +127,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "gemini",
     name: "Gemini Code Assist",
     subtitle: "Google Cloud Monitoring",
-    mark: "G",
-    markClass: "gemini",
+    logo: geminiLogo,
     credentialHint: "需要 Monitoring Viewer 权限。OAuth Access Token 由你主动提供，应用不会读取 gcloud 或浏览器凭据；令牌过期后需重新配置。",
     fields: [
       { id: "projectId", label: "Google Cloud Project ID", type: "text", placeholder: "my-project" },
@@ -140,8 +138,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "qwen_cn",
     name: "Qwen / 百炼国内",
     subtitle: "官方 Prometheus 模型监控",
-    mark: "Q",
-    markClass: "qwen",
+    logo: qwenLogo,
     credentialHint: "需要已开启的百炼高级监控、其公网 Prometheus HTTP API 地址和最小权限 AccessKey。Coding Plan Key 不会用于自动查询。",
     fields: qwenFields(),
   },
@@ -149,8 +146,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     id: "qwen_global",
     name: "Qwen / Model Studio Global",
     subtitle: "Official Prometheus monitoring",
-    mark: "Q",
-    markClass: "qwen",
+    logo: qwenLogo,
     credentialHint: "使用国际站高级监控的公网 Prometheus HTTP API 地址及最小权限 AccessKey。",
     fields: qwenFields(),
   },

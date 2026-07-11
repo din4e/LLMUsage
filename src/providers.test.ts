@@ -17,6 +17,13 @@ describe("provider catalog", () => {
     expect(ids).toContain("qwen_global");
   });
 
+  it("assigns each provider a local Lobe Icons SVG", () => {
+    for (const provider of providerDefinitions) {
+      expect(provider.logo).toMatch(/^(data:image\/svg\+xml|.*\.svg$)/);
+      expect(provider.logo).not.toMatch(/^https?:/);
+    }
+  });
+
   it("keeps configured and unconfigured providers in separate views", () => {
     const configured = new Set(["glm", "minimax_cn", "gemini"]);
 
