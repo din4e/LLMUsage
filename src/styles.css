@@ -26,6 +26,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 75% -20%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 35%), #0d1210; }
 :root[data-light] body { background: #eef1eb; }
 button, input, select { font: inherit; }
