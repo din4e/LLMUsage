@@ -22,10 +22,11 @@ describe("formatCooldown", () => {
 });
 
 describe("formatInteger", () => {
-  it("uses compact Chinese units without losing small values", () => {
+  it("uses M and B units without losing small values", () => {
     expect(formatInteger(999)).toBe("999");
-    expect(formatInteger(12_345)).toBe("1.2万");
-    expect(formatInteger(12_345_678)).toBe("1234.6万");
+    expect(formatInteger(12_345)).toBe("12,345");
+    expect(formatInteger(12_345_678)).toBe("12.3M");
+    expect(formatInteger(1_234_567_890)).toBe("1.2B");
   });
 });
 

@@ -50,8 +50,9 @@ export function formatCooldown(resetAtMs: number, nowMs = Date.now()): string {
 
 export function formatInteger(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "—";
-  if (value < 10_000) return Math.round(value).toLocaleString("zh-CN");
-  return `${(value / 10_000).toFixed(1)}万`;
+  if (value < 1_000_000) return Math.round(value).toLocaleString("en-US");
+  if (value < 1_000_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  return `${(value / 1_000_000_000).toFixed(1)}B`;
 }
 
 export function formatQuotaDetailValue(entry: OnlineDetailEntry): string {
