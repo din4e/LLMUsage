@@ -1,36 +1,51 @@
 # LLM Usage
 
-Windows-first desktop dashboard for online LLM account usage, plan quota, balance, and RMB-facing cost/balance visibility.
+面向 Windows 的桌面用量看板，用于汇总 LLM 在线账户的调用量、Token、订阅额度、余额及可估算的人民币成本。
 
-## Current support
+应用只展示已配置的供应商；其余供应商会保留在「添加供应商」目录中。供应商图标使用本地打包的 [Lobe Icons](https://github.com/lobehub/lobe-icons) SVG，因此安装后无需联网加载图标。
 
-| Provider | Region | Source | Shows |
-|---|---|---|---|
-| GLM | China | Experimental API-key monitor endpoints | Today calls, tokens, rolling token-window percentage, reset countdown |
-| Kimi Code / Moonshot API | China | Experimental Kimi Code usage endpoint with official Moonshot balance fallback | Every returned quota window, weekly usage, concurrency/total limits and reset times; or Moonshot CNY balance for an Open Platform key |
-| Kimi | Global | Official balance endpoint | Available balance, same response contract as Moonshot balance |
-| DeepSeek | China | Official balance endpoint | Available CNY balance, topped-up balance, granted balance |
-| MiniMax | China | Official Token Plan remains endpoint with same-region host fallback | Every returned model/window with used, remaining, total, start/reset time and remaining duration |
-| MiniMax | Global | Experimental Token Plan remains endpoint | Every returned model/window with complete quota counts and timing |
-| SiliconFlow | China | Official user info endpoint | Available CNY balance, topped-up balance, free balance |
-| SiliconFlow | Global | Official user info endpoint | Available balance with the same contract |
-| OpenRouter | Global | Official credits endpoint | Remaining USD credits from total purchased minus usage |
-| OpenAI / Codex API | Global | Official Organization Usage and Costs APIs | API requests, input/output tokens, model breakdown, USD cost and live-rate RMB estimate; requires Admin API Key |
-| Claude Code | Global | Official Claude Code Analytics API | UTC daily sessions, tokens, model cost and development activity; requires Anthropic Admin API Key |
-| Gemini Code Assist | Global | Google Cloud Monitoring | API calls and used tokens; requires Project ID, Monitoring Viewer and an explicit OAuth access token |
-| Qwen / Model Studio | China / Global | Official private Prometheus monitoring | Per-model calls and token consumption; requires the monitoring HTTP API URL and a least-privilege AccessKey pair |
+## 支持的供应商
 
-The app does not scrape web consoles, cookies, browser storage, prompts, responses, or authorization headers. API keys are encrypted with Windows DPAPI and stored per provider under the current Windows user. The auto-sync interval is a non-sensitive UI setting stored locally.
+| 供应商 | 区域 | 数据来源 | 展示内容 |
+| --- | --- | --- | --- |
+| 智谱 GLM | 中国 | 社区 API Key 监控端点 | 当日调用、Token、滚动 Token 窗口百分比、重置倒计时 |
+| Kimi Code / Moonshot API | 中国 | Kimi Code 用量端点；Moonshot 官方余额兜底 | 返回的全部额度窗口、周用量、并发/总量限制与重置时间；或开放平台人民币余额 |
+| Kimi | 国际 | 官方余额接口 | 可用余额 |
+| DeepSeek | 中国 | 官方余额接口 | 可用余额、充值余额、赠送余额 |
+| MiniMax | 中国 | Token Plan 剩余额度接口，同区域主机兜底 | 所有模型和窗口的已用、剩余、总量、开始/重置时间与剩余时长 |
+| MiniMax | 国际 | Token Plan 剩余额度接口 | 返回的全部资源额度及时间信息 |
+| 硅基流动 | 中国 | 官方用户信息接口 | 可用人民币余额、充值余额、免费余额 |
+| SiliconFlow | 国际 | 官方用户信息接口 | 可用余额 |
+| OpenRouter | 国际 | 官方 Credits 接口 | 已购额度减去用量后的美元余额 |
+| OpenAI / Codex API | 国际 | OpenAI Organization Usage 与 Costs API | 请求数、输入/输出 Token、模型明细、美元成本及人民币估算 |
+| Claude Code | 国际 | Claude Code Analytics API | UTC 日汇总会话、Token、模型成本和开发活动 |
+| Gemini Code Assist | 国际 | Google Cloud Monitoring | API 调用数和已用 Token |
+| Qwen / Model Studio | 中国 / 国际 | 官方私有 Prometheus 监控 | 各模型调用数和 Token 消耗 |
 
-Only configured providers appear in the dashboard; all others stay in the Add Provider catalog. Every validated detail set is rendered in a native, keyboard-accessible disclosure that is collapsed by default. MiniMax retains percent-only `general` quotas as well as count-based video, image, speech, music, and model rows. Provider identity objects and raw API responses are deliberately excluded from snapshots and cache.
+## 凭据与数据边界
 
-OpenAI organization data is not a claim about personal ChatGPT/Codex subscription quota. Claude Code personal Pro/Max remaining quota is not exposed by a public API. Qwen Coding Plan keys are not used for automated monitoring because the provider's terms prohibit custom automated clients; the supported Qwen path is the official private Prometheus monitoring API.
+- 凭据按供应商分开保存，并使用当前 Windows 用户的 DPAPI 加密。
+- 不读取网页控制台、Cookie、浏览器存储、聊天内容、提示词、响应内容或其他应用的凭据。
+- 自动同步间隔只是本地非敏感设置。
+- 在线返回的完整明细默认折叠，并支持键盘操作。
+- MiniMax 会保留仅百分比的 `general` 额度，以及视频、图像、语音、音乐和模型等计数型额度。
+- 原始 API 响应、账号身份信息不会写入快照或缓存。
 
-## Cost and balance policy
+不同产品的统计能力不同，应用会明确标注数据口径：
 
-Official balance endpoints are displayed as balance, not guessed daily cost. Kimi Code, GLM Coding Plan and MiniMax Token Plan are subscription/quota views, so the app does not fabricate per-call RMB cost when the provider does not return it. OpenAI and Claude return USD cost; when the public exchange-rate query succeeds, the dashboard also shows a clearly estimated RMB total. Kimi Code keys and Moonshot Open Platform keys are different products; the China adapter detects the key family, contacts only the matching product endpoint, and labels the result accordingly.
+- OpenAI 显示的是 API 组织数据，需要 Organization Admin API Key；不等同于个人 ChatGPT/Codex 订阅剩余额度。
+- Claude Code 需要 Anthropic Admin API Key；个人 Pro/Max 订阅没有公开的剩余额度 API。
+- Gemini 需要 Google Cloud Project ID、Monitoring Viewer 权限，以及由用户主动提供的 OAuth Access Token；应用不会读取 gcloud 或浏览器凭据。
+- Qwen 使用高级监控的 Prometheus HTTP API 和最小权限 AccessKey；不使用 Coding Plan Key 自动查询。
+- Kimi Code Key、Moonshot 开放平台 Key，以及 MiniMax 国内/国际 Key 属于不同产品或区域，应用会按密钥类型匹配端点。
 
-## Development
+## 成本与余额规则
+
+官方余额接口展示为余额，不会被猜测成当日成本。Kimi Code、GLM Coding Plan 和 MiniMax Token Plan 属于订阅/额度视图；当供应商未提供单次价格时，应用不会伪造人民币成本。
+
+OpenAI 与 Claude 返回美元成本。若公开汇率查询可用，界面会额外显示清晰标注的人民币估算值。
+
+## 开发
 
 ```powershell
 npm install
@@ -40,10 +55,16 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
 
-## Release build
+## 构建 Windows 安装包
 
 ```powershell
 npm run tauri build
 ```
 
-The release profile uses Tauri 2, native TypeScript, Rust `rustls`, stripping, and `panic = "abort"` to keep the Windows installer small. WebView2 is treated as a system runtime and is not counted in the package target.
+安装包输出目录：
+
+```text
+src-tauri/target/release/bundle/nsis/
+```
+
+项目使用 Tauri 2、原生 TypeScript、Rust `rustls`、符号剥离和 `panic = "abort"` 控制安装包体积。WebView2 作为系统运行时，不计入安装包体积目标。
