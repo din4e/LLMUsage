@@ -3,17 +3,16 @@ import { maximizeControlLabel, performWindowAction, type WindowController } from
 
 function fakeWindow(): WindowController {
   return {
-    minimize: vi.fn().mockResolvedValue(undefined),
+    hide: vi.fn().mockResolvedValue(undefined),
     toggleMaximize: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 describe("window controls", () => {
   it.each([
-    ["minimize", "minimize"],
+    ["minimize", "hide"],
     ["maximize", "toggleMaximize"],
-    ["close", "close"],
+    ["close", "hide"],
   ] as const)("maps %s to the matching Tauri window command", async (action, method) => {
     const window = fakeWindow();
 

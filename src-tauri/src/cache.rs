@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,71 @@ pub struct CachedSnapshot {
 
 pub struct SnapshotCache {
     dir: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsageRecord {
+    pub date: String,
+    pub provider_id: String,
+    pub requests: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub estimated_cost_cny: Option<f64>,
+}
+
+pub struct DailyUsageHistory {
+    path: PathBuf,
+}
+
+impl DailyUsageHistory {
+    pub fn new(app_data_dir: &Path) -> Self {
+        Self {
+            path: app_data_dir.join("history").join("daily-usage.json"),
+        }
+    }
+
+    pub fn upsert(&self, record: DailyUsageRecord) -> Result<(), CacheError> {
+        if !is_valid_daily_record(&record) {
+            return Err(CacheError::Invalid);
+        }
+        let mut records = self.load()?;
+        records.retain(|existing| {
+            existing.date != record.date || existing.provider_id != record.provider_id
+        });
+        records.push(record);
+        records.sort_by(|left, right| {
+            left.date
+                .cmp(&right.date)
+                .then(left.provider_id.cmp(&right.provider_id))
+        });
+        let parent = self.path.parent().ok_or(CacheError::Invalid)?;
+        std::fs::create_dir_all(parent).map_err(|_| CacheError::Io)?;
+        let bytes = serde_json::to_vec(&records).map_err(|_| CacheError::Json)?;
+        let temp = self.path.with_extension("tmp");
+        std::fs::write(&temp, bytes).map_err(|_| CacheError::Io)?;
+        if self.path.exists() {
+            std::fs::remove_file(&self.path).map_err(|_| CacheError::Io)?;
+        }
+        std::fs::rename(temp, &self.path).map_err(|_| CacheError::Io)
+    }
+
+    pub fn load(&self) -> Result<Vec<DailyUsageRecord>, CacheError> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(CacheError::Io),
+        };
+        if bytes.len() > 1_048_576 {
+            return Err(CacheError::Invalid);
+        }
+        let records: Vec<DailyUsageRecord> =
+            serde_json::from_slice(&bytes).map_err(|_| CacheError::Json)?;
+        if records.iter().all(is_valid_daily_record) {
+            Ok(records)
+        } else {
+            Err(CacheError::Invalid)
+        }
+    }
 }
 
 impl SnapshotCache {
@@ -80,6 +146,18 @@ fn is_safe_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
+fn is_valid_date(value: &str) -> bool {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+}
+
+fn is_valid_daily_record(record: &DailyUsageRecord) -> bool {
+    is_valid_date(&record.date)
+        && is_safe_id(&record.provider_id)
+        && record
+            .estimated_cost_cny
+            .is_none_or(|value| value.is_finite() && value >= 0.0)
+}
+
 fn now_ms() -> Result<i64, CacheError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -130,5 +208,68 @@ mod tests {
             cache.save("glm", "../online", serde_json::json!({})),
             Err(CacheError::Invalid)
         ));
+    }
+
+    #[test]
+    fn upserts_daily_usage_by_date_and_provider() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-daily-history-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+
+        history
+            .upsert(DailyUsageRecord {
+                date: "2026-07-13".into(),
+                provider_id: "glm".into(),
+                requests: Some(2),
+                total_tokens: Some(200),
+                estimated_cost_cny: None,
+            })
+            .expect("save first observation");
+        history
+            .upsert(DailyUsageRecord {
+                date: "2026-07-13".into(),
+                provider_id: "glm".into(),
+                requests: Some(3),
+                total_tokens: Some(350),
+                estimated_cost_cny: None,
+            })
+            .expect("replace same day observation");
+        history
+            .upsert(DailyUsageRecord {
+                date: "2026-07-13".into(),
+                provider_id: "openai_codex".into(),
+                requests: Some(4),
+                total_tokens: Some(700),
+                estimated_cost_cny: Some(1.2),
+            })
+            .expect("save another provider");
+
+        let records = history.load().expect("load history");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].provider_id, "glm");
+        assert_eq!(records[0].total_tokens, Some(350));
+        assert_eq!(records[1].provider_id, "openai_codex");
+    }
+
+    #[test]
+    fn rejects_invalid_calendar_dates_in_daily_history() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-invalid-history-test-{}",
+            std::process::id()
+        ));
+        let history = DailyUsageHistory::new(&dir);
+        let result = history.upsert(DailyUsageRecord {
+            date: "2026-13-40".into(),
+            provider_id: "glm".into(),
+            requests: Some(1),
+            total_tokens: Some(10),
+            estimated_cost_cny: None,
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result, Err(CacheError::Invalid));
     }
 }

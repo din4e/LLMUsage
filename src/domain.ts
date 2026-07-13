@@ -4,6 +4,20 @@ export interface ProviderMetrics {
   estimatedCostCny: number | null;
 }
 
+export type TrendRange = "7d" | "30d" | "all";
+
+export interface DailyUsageRecord {
+  date: string;
+  providerId: string;
+  requests: number | null;
+  totalTokens: number | null;
+  estimatedCostCny: number | null;
+}
+
+export interface DailyTrendPoint extends ProviderMetrics {
+  date: string;
+}
+
 export interface OnlineDetailSection {
   title: string;
   entries: OnlineDetailEntry[];
@@ -34,6 +48,38 @@ export function localDayRangeMs(date = new Date()): { startTimeMs: number; endTi
   const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
   return { startTimeMs: start.getTime(), endTimeMs: end.getTime() };
+}
+
+export function localDateKey(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function selectDailyTrend(
+  records: DailyUsageRecord[],
+  range: TrendRange,
+  providerId: string,
+  today = new Date(),
+): DailyTrendPoint[] {
+  const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (range !== "all") cutoff.setDate(cutoff.getDate() - (range === "7d" ? 6 : 29));
+  const cutoffKey = localDateKey(cutoff);
+  const todayKey = localDateKey(today);
+  const byDate = new Map<string, ProviderMetrics[]>();
+
+  for (const record of records) {
+    if (record.date > todayKey || (range !== "all" && record.date < cutoffKey)) continue;
+    if (providerId !== "all" && record.providerId !== providerId) continue;
+    const metrics = byDate.get(record.date) ?? [];
+    metrics.push(record);
+    byDate.set(record.date, metrics);
+  }
+
+  return Array.from(byDate, ([date, metrics]) => ({ date, ...summarizeProviders(metrics) }))
+    .filter((point) => point.totalTokens !== null)
+    .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 export function formatCooldown(resetAtMs: number, nowMs = Date.now()): string {

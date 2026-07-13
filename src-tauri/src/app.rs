@@ -1,4 +1,6 @@
-use llm_usage_core::cache::{CachedSnapshot, SnapshotCache};
+use llm_usage_core::cache::{
+    CachedSnapshot, DailyUsageHistory, DailyUsageRecord, SnapshotCache,
+};
 use llm_usage_core::providers::glm::{GlmClient, GlmUsageSnapshot};
 use llm_usage_core::providers::online::{
     OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot, OnlineUsageRange,
@@ -109,6 +111,23 @@ fn snapshot_cache(app: &tauri::AppHandle) -> Result<SnapshotCache, CommandError>
         .app_data_dir()
         .map_err(|_| CommandError::credential())?;
     Ok(SnapshotCache::new(&app_data))
+}
+
+fn daily_usage_history(app: &tauri::AppHandle) -> Result<DailyUsageHistory, CommandError> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::credential())?;
+    Ok(DailyUsageHistory::new(&app_data))
+}
+
+fn record_daily_usage(
+    app: &tauri::AppHandle,
+    record: DailyUsageRecord,
+) -> Result<(), CommandError> {
+    daily_usage_history(app)?
+        .upsert(record)
+        .map_err(|_| CommandError::credential())
 }
 
 fn cache_snapshot<T: Serialize>(
@@ -222,9 +241,17 @@ pub fn load_cached_snapshots(app: tauri::AppHandle) -> Vec<CachedSnapshot> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub fn load_daily_usage(app: tauri::AppHandle) -> Vec<DailyUsageRecord> {
+    daily_usage_history(&app)
+        .and_then(|history| history.load().map_err(|_| CommandError::credential()))
+        .unwrap_or_default()
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn configure_glm(
     app: tauri::AppHandle,
     api_key: String,
+    local_date: String,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
@@ -248,12 +275,23 @@ pub async fn configure_glm(
     }
     api_key.zeroize();
     cache_snapshot(&app, "glm", "glm", &snapshot)?;
+    record_daily_usage(
+        &app,
+        DailyUsageRecord {
+            date: local_date,
+            provider_id: "glm".into(),
+            requests: Some(snapshot.requests),
+            total_tokens: Some(snapshot.total_tokens),
+            estimated_cost_cny: None,
+        },
+    )?;
     Ok(snapshot)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn sync_glm(
     app: tauri::AppHandle,
+    local_date: String,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
@@ -274,6 +312,16 @@ pub async fn sync_glm(
         .await
         .map_err(|_| CommandError::provider())?;
     cache_snapshot(&app, "glm", "glm", &snapshot)?;
+    record_daily_usage(
+        &app,
+        DailyUsageRecord {
+            date: local_date,
+            provider_id: "glm".into(),
+            requests: Some(snapshot.requests),
+            total_tokens: Some(snapshot.total_tokens),
+            estimated_cost_cny: None,
+        },
+    )?;
     Ok(snapshot)
 }
 
@@ -282,6 +330,7 @@ pub async fn configure_online_provider(
     app: tauri::AppHandle,
     provider_id: String,
     api_key: String,
+    local_date: String,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
@@ -312,6 +361,16 @@ pub async fn configure_online_provider(
     }
     api_key.zeroize();
     cache_snapshot(&app, provider.id(), "online", &snapshot)?;
+    record_daily_usage(
+        &app,
+        DailyUsageRecord {
+            date: local_date,
+            provider_id: provider.id().into(),
+            requests: snapshot.requests,
+            total_tokens: snapshot.total_tokens,
+            estimated_cost_cny: snapshot.estimated_cost_cny,
+        },
+    )?;
     Ok(snapshot)
 }
 
@@ -319,6 +378,7 @@ pub async fn configure_online_provider(
 pub async fn sync_online_provider(
     app: tauri::AppHandle,
     provider_id: String,
+    local_date: String,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
@@ -344,6 +404,16 @@ pub async fn sync_online_provider(
         .await
         .map_err(|error| online_error(provider, error))?;
     cache_snapshot(&app, provider.id(), "online", &snapshot)?;
+    record_daily_usage(
+        &app,
+        DailyUsageRecord {
+            date: local_date,
+            provider_id: provider.id().into(),
+            requests: snapshot.requests,
+            total_tokens: snapshot.total_tokens,
+            estimated_cost_cny: snapshot.estimated_cost_cny,
+        },
+    )?;
     Ok(snapshot)
 }
 

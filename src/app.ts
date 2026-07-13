@@ -1,12 +1,17 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { renderProviderDetails } from "./details";
 import {
   formatCooldown,
   formatInteger,
+  localDateKey,
   localDayRange,
   localDayRangeMs,
+  selectDailyTrend,
   summarizeProviders,
+  type DailyUsageRecord,
   type OnlineDetailSection,
+  type TrendRange,
 } from "./domain";
 import {
   providerDefinition,
@@ -16,6 +21,7 @@ import {
   type ProviderDefinition,
 } from "./providers";
 import { initializeWindowControls } from "./window-controls";
+import { renderDailyTrendChart } from "./trend-chart";
 import "./styles.css";
 
 interface GlmSnapshot {
@@ -70,6 +76,11 @@ const catalogDialog = byId<HTMLDialogElement>("catalog-dialog");
 const providerCatalog = byId<HTMLElement>("provider-catalog");
 const providerList = byId<HTMLElement>("provider-list");
 const providerEmpty = byId<HTMLElement>("provider-empty");
+const trendProvider = byId<HTMLSelectElement>("trend-provider");
+const trendRange = byId<HTMLElement>("trend-range");
+const trendChart = document.getElementById("trend-chart") as SVGSVGElement | null;
+const trendEmpty = byId<HTMLElement>("trend-empty");
+const trendDescription = byId<HTMLElement>("trend-description");
 const configuredProviderIds = new Set<string>();
 let selectedProvider = "glm";
 let glmResetAt: number | null = null;
@@ -77,6 +88,43 @@ let glmSnapshot: GlmSnapshot | null = null;
 const onlineSnapshots = new Map<string, OnlineSnapshot>();
 let autoSyncTimer: number | null = null;
 let isSyncing = false;
+let dailyUsageRecords: DailyUsageRecord[] = [];
+let selectedTrendRange: TrendRange = "7d";
+
+function renderTrendProviderOptions() {
+  if (!trendProvider) return;
+  const selected = trendProvider.value || "all";
+  const providerIds = new Set([
+    ...configuredProviderIds,
+    ...dailyUsageRecords.map((record) => record.providerId),
+  ]);
+  const options = [new Option("全部提供商", "all")];
+  for (const provider of providerDefinitions) {
+    if (providerIds.has(provider.id)) options.push(new Option(provider.name, provider.id));
+  }
+  trendProvider.replaceChildren(...options);
+  trendProvider.value = options.some((option) => option.value === selected) ? selected : "all";
+}
+
+function renderTrend() {
+  if (!trendChart) return;
+  const providerId = trendProvider?.value || "all";
+  const points = selectDailyTrend(dailyUsageRecords, selectedTrendRange, providerId);
+  const selectedName = providerId === "all" ? "全部提供商" : providerName(providerId);
+  renderDailyTrendChart(trendChart, trendEmpty, trendDescription, points, selectedName);
+}
+
+async function loadDailyUsage() {
+  if (isTauri()) {
+    try {
+      dailyUsageRecords = await invoke<DailyUsageRecord[]>("load_daily_usage");
+    } catch {
+      dailyUsageRecords = [];
+    }
+  }
+  renderTrendProviderOptions();
+  renderTrend();
+}
 
 function initializeProviderRows() {
   if (!providerList) return;
@@ -163,6 +211,7 @@ function renderProviderVisibility() {
   }
   if (providerEmpty) providerEmpty.hidden = configuredProviderIds.size > 0;
   renderProviderCatalog();
+  renderTrendProviderOptions();
   renderTotals();
 }
 
@@ -301,7 +350,10 @@ async function syncGlm() {
   }
   setStatus("正在连接 GLM", "syncing");
   try {
-    renderGlm(await invoke<GlmSnapshot>("sync_glm", localDayRange()));
+    renderGlm(await invoke<GlmSnapshot>("sync_glm", {
+      localDate: localDateKey(),
+      ...localDayRange(),
+    }));
   } catch (reason) {
     const error = reason as CommandError;
     setStatus(error.message ?? "同步失败，请稍后重试", "error");
@@ -313,6 +365,7 @@ async function syncOnline(providerId: string) {
   try {
     renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", {
       providerId,
+      localDate: localDateKey(),
       ...localDayRangeMs(),
     }));
   } catch (reason) {
@@ -336,6 +389,7 @@ async function syncAll() {
       await syncOnline(provider.id);
     }
     renderTotals();
+    await loadDailyUsage();
   } finally {
     isSyncing = false;
   }
@@ -476,6 +530,7 @@ providerForm?.addEventListener("submit", async (event) => {
     if (selectedProvider === "glm") {
       const snapshot = await invoke<GlmSnapshot>("configure_glm", {
         apiKey: credential,
+        localDate: localDateKey(),
         ...localDayRange(),
       });
       renderGlm(snapshot);
@@ -483,12 +538,14 @@ providerForm?.addEventListener("submit", async (event) => {
       const snapshot = await invoke<OnlineSnapshot>("configure_online_provider", {
         providerId: selectedProvider,
         apiKey: credential,
+        localDate: localDateKey(),
         ...localDayRangeMs(),
       });
       renderOnline(snapshot);
       setStatus(`${snapshot.label} 已完成在线同步`);
     }
     setProviderConfigured(selectedProvider);
+    await loadDailyUsage();
     dialog?.close();
   } catch (reason) {
     const error = reason as CommandError;
@@ -502,8 +559,19 @@ providerForm?.addEventListener("submit", async (event) => {
 });
 
 dialog?.addEventListener("close", () => credentialFields?.replaceChildren());
+trendProvider?.addEventListener("change", renderTrend);
+trendRange?.addEventListener("click", (event) => {
+  const button = (event.target as Element).closest<HTMLButtonElement>("button[data-range]");
+  if (!button) return;
+  selectedTrendRange = button.dataset.range as TrendRange;
+  for (const item of trendRange.querySelectorAll<HTMLButtonElement>("button[data-range]")) {
+    item.setAttribute("aria-pressed", String(item === button));
+  }
+  renderTrend();
+});
 window.setInterval(updateCooldown, 30_000);
 void initializeWindowControls();
+if (isTauri()) void listen("tray-sync", () => void syncAll());
 initializeProviderRows();
 void (async () => {
   const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");
@@ -511,5 +579,6 @@ void (async () => {
   applyAutoSync(Number.isFinite(savedAutoSync) ? savedAutoSync : 0);
   await loadConfiguredProviders();
   await loadCache();
+  await loadDailyUsage();
   await syncAll();
 })();

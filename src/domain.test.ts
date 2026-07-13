@@ -7,7 +7,9 @@ import {
   formatQuotaDetailValue,
   localDayRange,
   localDayRangeMs,
+  selectDailyTrend,
   summarizeProviders,
+  type DailyUsageRecord,
 } from "./domain";
 
 describe("formatCooldown", () => {
@@ -56,6 +58,36 @@ describe("localDayRange", () => {
       startTimeMs: new Date(2026, 6, 10).getTime(),
       endTimeMs: new Date(2026, 6, 11).getTime(),
     });
+  });
+});
+
+describe("selectDailyTrend", () => {
+  const records: DailyUsageRecord[] = [
+    { date: "2026-07-06", providerId: "glm", requests: 2, totalTokens: 200, estimatedCostCny: null },
+    { date: "2026-07-07", providerId: "glm", requests: 3, totalTokens: 300, estimatedCostCny: null },
+    { date: "2026-07-07", providerId: "openai_codex", requests: 4, totalTokens: 700, estimatedCostCny: 1.2 },
+    { date: "2026-07-13", providerId: "openai_codex", requests: 5, totalTokens: 900, estimatedCostCny: 1.8 },
+    { date: "2026-07-14", providerId: "openai_codex", requests: 99, totalTokens: 99_000, estimatedCostCny: 99 },
+  ];
+
+  it("keeps the latest seven local calendar days and aggregates providers by date", () => {
+    expect(selectDailyTrend(records, "7d", "all", new Date(2026, 6, 13))).toEqual([
+      { date: "2026-07-07", requests: 7, totalTokens: 1_000, estimatedCostCny: 1.2 },
+      { date: "2026-07-13", requests: 5, totalTokens: 900, estimatedCostCny: 1.8 },
+    ]);
+  });
+
+  it("filters one provider and preserves the full available history", () => {
+    expect(selectDailyTrend(records, "all", "glm", new Date(2026, 6, 13))).toEqual([
+      { date: "2026-07-06", requests: 2, totalTokens: 200, estimatedCostCny: null },
+      { date: "2026-07-07", requests: 3, totalTokens: 300, estimatedCostCny: null },
+    ]);
+  });
+
+  it("does not render balance-only observations as zero Token consumption", () => {
+    expect(selectDailyTrend([
+      { date: "2026-07-13", providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null },
+    ], "7d", "deepseek", new Date(2026, 6, 13))).toEqual([]);
   });
 });
 

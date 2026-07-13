@@ -4,18 +4,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 export type WindowAction = "minimize" | "maximize" | "close";
 
 export interface WindowController {
-  minimize(): Promise<void>;
+  hide(): Promise<void>;
   toggleMaximize(): Promise<void>;
-  close(): Promise<void>;
 }
 
 export function performWindowAction(
   action: WindowAction,
   window: WindowController,
 ): Promise<void> {
-  if (action === "minimize") return window.minimize();
   if (action === "maximize") return window.toggleMaximize();
-  return window.close();
+  return window.hide();
 }
 
 export function maximizeControlLabel(maximized: boolean): "最大化" | "还原" {
@@ -32,17 +30,16 @@ export async function initializeWindowControls(root: ParentNode = document): Pro
   );
   if (!header || !maximizeButton || !buttons.length) return;
 
-  if (!isTauri()) {
-    for (const button of buttons) button.disabled = true;
-    return;
-  }
+  if (!isTauri()) return;
 
   const appWindow = getCurrentWindow();
   header.dataset.runtime = "tauri";
 
   const refreshMaximizeState = async () => {
     const maximized = await appWindow.isMaximized();
-    maximizeButton.setAttribute("aria-label", maximizeControlLabel(maximized));
+    const label = maximizeControlLabel(maximized);
+    maximizeButton.setAttribute("aria-label", label);
+    maximizeButton.title = label;
     maximizeButton.dataset.maximized = String(maximized);
   };
 

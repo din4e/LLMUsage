@@ -12,18 +12,18 @@
       <div class="window-drag-region" data-tauri-drag-region>
         <span class="window-app-symbol" aria-hidden="true">◇</span>
         <strong>LLM Usage</strong>
-        <span class="window-runtime"><i></i> LOCAL RUNTIME</span>
+        <span class="window-runtime"><i></i> TRAY SERVICE</span>
       </div>
       <div class="window-controls" aria-label="窗口控制">
-        <button type="button" data-window-action="minimize" aria-label="最小化">
-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8" /></svg>
+        <button type="button" data-window-action="minimize" aria-label="隐藏到系统托盘" title="隐藏到系统托盘">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.5h7" /></svg>
         </button>
-        <button type="button" data-window-action="maximize" data-maximized="false" aria-label="最大化">
-          <svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
-          <svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3h5v5M3 4h5v5H3z" /></svg>
+        <button type="button" data-window-action="maximize" data-maximized="false" aria-label="最大化" title="最大化">
+          <svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.75" y="2.75" width="6.5" height="6.5" rx=".4" /></svg>
+          <svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.25 3h4.75v4.75M3 4.25h4.75V9H3z" /></svg>
         </button>
-        <button class="window-close" type="button" data-window-action="close" aria-label="关闭窗口">
-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6m0-6L3 9" /></svg>
+        <button class="window-close" type="button" data-window-action="close" aria-label="关闭到系统托盘" title="关闭到系统托盘">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3.25 3.25 5.5 5.5m0-5.5-5.5 5.5" /></svg>
         </button>
       </div>
     </header>
@@ -55,6 +55,26 @@
           <article><span>Token</span><strong id="total-tokens">—</strong><small>输入 + 输出</small></article>
           <article><span>余额/成本</span><strong id="total-cost">—</strong><small>人民币口径</small></article>
           <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 9</strong><small>已配置供应商</small></article>
+        </section>
+
+        <section class="trend-panel" aria-labelledby="trend-title">
+          <header class="trend-heading">
+            <div><p class="eyebrow">DAILY TREND</p><h2 id="trend-title">每日 Token 消耗</h2></div>
+            <div class="trend-controls">
+              <label for="trend-provider">提供商</label>
+              <select id="trend-provider"><option value="all">全部提供商</option></select>
+              <div class="range-switch" id="trend-range" aria-label="趋势时间范围">
+                <button type="button" data-range="7d" aria-pressed="true">最近 7 日</button>
+                <button type="button" data-range="30d" aria-pressed="false">最近 30 日</button>
+                <button type="button" data-range="all" aria-pressed="false">全部</button>
+              </div>
+            </div>
+          </header>
+          <div class="trend-chart-wrap">
+            <svg id="trend-chart" class="trend-chart" viewBox="0 0 900 250" role="img" aria-labelledby="trend-title trend-description"></svg>
+            <p class="trend-empty" id="trend-empty" role="status">同步供应商后，将从当天开始积累每日趋势。</p>
+          </div>
+          <p class="trend-description" id="trend-description">本地保存的非敏感日汇总 · 暂无历史数据</p>
         </section>
 
         <section class="section-heading">
