@@ -1,10 +1,22 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod single_instance;
 mod tray;
 
 fn main() {
+    let _startup_guard = match single_instance::acquire_startup_guard() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("{error}");
+            return;
+        }
+    };
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
         .setup(|app| {
             tray::setup(app.handle())?;
             Ok(())
