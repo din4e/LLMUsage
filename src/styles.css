@@ -363,12 +363,46 @@ progress::-webkit-progress-value { background: linear-gradient(90deg, var(--acce
 .detail-entry dd { margin: 0; overflow-wrap: anywhere; font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }
 .detail-entry progress { margin-bottom: 5px; }
 .detail-meta { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+.time-window-progress { margin-top: 4px; }
+.time-window-progress-row { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px; color: var(--muted); font-size: 11px; }
+.time-window-progress-row span:first-child { color: var(--accent); }
+.time-window-progress-row span:last-child { color: var(--signal); }
+.time-window-progress-bar { height: 4px; margin-bottom: 0; accent-color: var(--signal); }
+.time-window-progress-bar::-webkit-progress-value { background: linear-gradient(90deg, var(--signal), var(--accent-strong)); box-shadow: 0 0 6px var(--signal); }
 
 .provider-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 9px; border: 1px solid var(--line); background: var(--surface); }
 .provider-empty div { display: grid; gap: 2px; }
 .provider-empty strong { font-size: 15px; }
 .provider-empty span { color: var(--muted); font-size: 13px; }
 .more-providers { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 7px; color: var(--muted); font-size: 13px; }
+
+.about-topbar { margin-bottom: 14px; }
+.about-version {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--accent);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+.about-card { margin-bottom: 14px; padding: 14px 16px 15px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 8px 28px rgb(0 0 0 / 8%); }
+.about-card h2 { margin: 2px 0 7px; }
+.about-card > p { margin: 0; }
+.about-copy { color: var(--muted); font-size: 14px; line-height: 1.65; }
+.about-grid { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 14px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 8px 28px rgb(0 0 0 / 8%); }
+.about-fact { position: relative; min-height: 78px; padding: 9px 12px 8px; overflow: hidden; border-right: 1px solid var(--line); }
+.about-fact::after { content: ""; position: absolute; top: 0; right: 0; width: 16px; height: 16px; border-top: 1px solid var(--signal); border-right: 1px solid var(--signal); opacity: .45; }
+.about-fact:last-child { border-right: 0; }
+.about-fact span { display: block; margin-bottom: 3px; color: var(--muted); font-size: 13px; }
+.about-fact strong { display: block; margin-bottom: 2px; overflow-wrap: anywhere; color: var(--text); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 18px; font-weight: 560; line-height: 1.15; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.about-fact small { color: var(--muted); font-size: 12px; line-height: 1.3; }
+.about-list { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+.about-list li { margin-bottom: 1px; }
 
 dialog {
   width: min(460px, calc(100% - 24px));
@@ -411,6 +445,9 @@ input:hover { border-color: var(--line-strong); }
   .provider-row { grid-template-columns: 1fr 1fr auto; }
   .provider-row .quota-cell { grid-column: 1 / 3; grid-row: 2; }
   .detail-content, .detail-disclosure > summary { padding-left: 0; }
+  .about-grid { grid-template-columns: repeat(2, 1fr); }
+  .about-fact:nth-child(2) { border-right: 0; }
+  .about-fact:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
 }
 
 @media (max-width: 620px) {
@@ -439,6 +476,10 @@ input:hover { border-color: var(--line-strong); }
   .provider-identity p { white-space: normal; }
   .detail-section { grid-template-columns: 1fr; gap: 4px; }
   .detail-grid, .provider-catalog { grid-template-columns: minmax(0, 1fr); }
+  .about-grid { grid-template-columns: 1fr; }
+  .about-fact { border-right: 0; border-bottom: 1px solid var(--line); }
+  .about-fact:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .about-fact:last-child { border-bottom: 0; }
   .more-providers { justify-content: space-between; }
   .more-providers span { max-width: 58%; }
   dialog form { padding: 14px; }

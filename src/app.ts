@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { renderProviderDetails } from "./details";
 import {
@@ -30,6 +31,7 @@ interface GlmSnapshot {
   cooldownEndsAtMs: number;
   requests: number;
   totalTokens: number;
+  detailSections?: OnlineDetailSection[];
 }
 
 interface OnlineSnapshot {
@@ -90,6 +92,7 @@ let autoSyncTimer: number | null = null;
 let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
+const APP_VERSION_FALLBACK = "0.1.2";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
@@ -254,6 +257,50 @@ function setStatus(message: string, state: "ready" | "syncing" | "error" = "read
   if (syncStatus?.lastChild) syncStatus.lastChild.textContent = ` ${message}`;
 }
 
+type ViewId = "dashboard" | "about";
+
+function routeFromHash(hash: string): { view: ViewId; anchor: string | null } {
+  if (hash === "about") return { view: "about", anchor: null };
+  if (hash === "providers") return { view: "dashboard", anchor: "providers" };
+  return { view: "dashboard", anchor: null };
+}
+
+function applyRoute() {
+  const hash = window.location.hash.slice(1);
+  const { view, anchor } = routeFromHash(hash);
+  byId("dashboard")?.toggleAttribute("hidden", view !== "dashboard");
+  byId("about")?.toggleAttribute("hidden", view !== "about");
+  updateNavActive(hash || "dashboard");
+  if (anchor) {
+    requestAnimationFrame(() => byId(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  } else {
+    const root = view === "about" ? byId("about") : byId("dashboard");
+    root?.scrollTo({ top: 0 });
+  }
+}
+
+function updateNavActive(hash: string) {
+  document.querySelectorAll<HTMLElement>(".rail .nav-item[href]").forEach((item) => {
+    const href = item.getAttribute("href")?.slice(1) ?? "dashboard";
+    const isActive = href === hash;
+    item.classList.toggle("active", isActive);
+    if (isActive) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
+}
+
+function setText(id: string, text: string) {
+  const el = byId<HTMLElement>(id);
+  if (el) el.textContent = text;
+}
+
+async function populateAboutMetadata() {
+  const version = isTauri() ? await getVersion().catch(() => APP_VERSION_FALLBACK) : APP_VERSION_FALLBACK;
+  setText("app-version", version);
+  setText("app-version-detail", version);
+  setText("about-provider-count", String(providerDefinitions.length));
+}
+
 function renderGlm(snapshot: GlmSnapshot) {
   setProviderConfigured("glm");
   glmSnapshot = snapshot;
@@ -266,6 +313,7 @@ function renderGlm(snapshot: GlmSnapshot) {
   if (requests) requests.textContent = `${formatInteger(snapshot.requests)} 次调用 · ${snapshot.planLevel}`;
   if (percent) percent.textContent = `${snapshot.usedPercent.toFixed(1)}%`;
   if (progress) progress.value = snapshot.usedPercent;
+  renderProviderDetails("glm", snapshot.detailSections);
   updateCooldown();
   renderTotals();
   setStatus("刚刚完成在线同步");
@@ -572,7 +620,10 @@ trendRange?.addEventListener("click", (event) => {
 window.setInterval(updateCooldown, 30_000);
 void initializeWindowControls();
 if (isTauri()) void listen("tray-sync", () => void syncAll());
+window.addEventListener("hashchange", applyRoute);
+applyRoute();
 initializeProviderRows();
+void populateAboutMetadata();
 void (async () => {
   const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");
   if (autoSyncInterval && Number.isFinite(savedAutoSync)) autoSyncInterval.value = String(savedAutoSync);

@@ -1,6 +1,8 @@
 import {
+  computeTimeWindowElapsedPercent,
   formatDuration,
   formatQuotaDetailValue,
+  formatResetRemainingText,
   type OnlineDetailEntry,
   type OnlineDetailSection,
 } from "./domain";
@@ -73,6 +75,11 @@ function renderDetailEntry(entry: OnlineDetailEntry): HTMLElement {
     card.append(progress);
   }
 
+  if (entry.resetAtMs != null) {
+    const timeProgress = renderTimeWindowProgress(entry);
+    if (timeProgress) card.append(timeProgress);
+  }
+
   const metadata = detailMetadata(entry);
   if (metadata.length) {
     const meta = document.createElement("p");
@@ -116,6 +123,41 @@ function formatLocalTime(timestampMs: number): string {
     minute: "2-digit",
     hour12: false,
   }).format(date);
+}
+
+function renderTimeWindowProgress(entry: OnlineDetailEntry): HTMLElement | null {
+  if (entry.resetAtMs == null) return null;
+  const text = formatResetRemainingText(entry.resetAtMs);
+  // The bar fills up as the window elapses (Kimi/MiniMax/GLM track elapsed time).
+  // Entries that only expose a reset timestamp fall back to consumed quota.
+  const percent = entry.startAtMs != null
+    ? computeTimeWindowElapsedPercent(entry.startAtMs, entry.resetAtMs)
+    : isPercent(entry.usedPercent)
+      ? entry.usedPercent
+      : null;
+  if (text == null || percent == null) return null;
+
+  const available = `${entry.remaining ?? "—"}${entry.unit}`;
+
+  const wrap = document.createElement("div");
+  wrap.className = "time-window-progress";
+
+  const row = document.createElement("div");
+  row.className = "time-window-progress-row";
+  const availableLabel = document.createElement("span");
+  availableLabel.textContent = `可用 ${available}`;
+  const remainingLabel = document.createElement("span");
+  remainingLabel.textContent = text;
+  row.append(availableLabel, remainingLabel);
+
+  const progress = document.createElement("progress");
+  progress.className = "time-window-progress-bar";
+  progress.max = 100;
+  progress.value = percent;
+  progress.setAttribute("aria-label", `可用 ${available} · ${text}`);
+
+  wrap.append(row, progress);
+  return wrap;
 }
 
 function isPercent(value: number | null | undefined): value is number {

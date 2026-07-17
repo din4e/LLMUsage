@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  computeTimeWindowElapsedPercent,
   credentialHint,
   formatCooldown,
   formatDuration,
   formatInteger,
   formatQuotaDetailValue,
+  formatResetRemainingText,
   localDayRange,
   localDayRangeMs,
   selectDailyTrend,
@@ -116,5 +118,34 @@ describe("quota detail formatting", () => {
   it("formats provider window durations compactly", () => {
     expect(formatDuration(600_000)).toBe("10 分钟");
     expect(formatDuration(9_000_000)).toBe("2 小时 30 分钟");
+  });
+});
+
+describe("time window progress", () => {
+  it("computes elapsed time percent for a window", () => {
+    const start = new Date("2026-07-13T00:00:00Z").getTime();
+    const reset = new Date("2026-07-20T00:00:00Z").getTime();
+    const now = new Date("2026-07-15T12:00:00Z").getTime();
+
+    const percent = computeTimeWindowElapsedPercent(start, reset, now);
+    expect(percent).toBeCloseTo(((now - start) / (reset - start)) * 100, 1);
+  });
+
+  it("returns null for invalid windows", () => {
+    expect(computeTimeWindowElapsedPercent(100, 100)).toBeNull();
+    expect(computeTimeWindowElapsedPercent(NaN, 100)).toBeNull();
+  });
+
+  it("formats remaining time text from a reset timestamp", () => {
+    const reset = new Date("2026-07-20T00:00:00Z").getTime();
+    const now = new Date("2026-07-15T12:00:00Z").getTime();
+
+    const text = formatResetRemainingText(reset, now);
+    expect(text).toContain("周三");
+    expect(text).toContain("剩余");
+  });
+
+  it("returns null for invalid reset timestamps", () => {
+    expect(formatResetRemainingText(NaN)).toBeNull();
   });
 });

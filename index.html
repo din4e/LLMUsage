@@ -33,6 +33,7 @@
         <nav>
           <a class="nav-item active" href="#dashboard" aria-current="page" aria-label="用量总览">⌁</a>
           <a class="nav-item" href="#providers" aria-label="供应商设置">◇</a>
+          <a class="nav-item" href="#about" aria-label="关于">ⓘ</a>
         </nav>
         <button class="nav-item theme-button" id="theme-toggle" type="button" aria-label="切换深色主题">◐</button>
       </aside>
@@ -90,6 +91,42 @@
         <section class="more-providers" id="providers">
           <span id="catalog-summary">未配置供应商集中收纳，不占用仪表盘空间</span>
           <button class="row-action" type="button" data-action="open-catalog">＋ 添加供应商</button>
+        </section>
+      </main>
+
+      <main id="about" hidden>
+        <header class="topbar about-topbar">
+          <div>
+            <p class="eyebrow">ABOUT</p>
+            <h1>关于 LLM Usage</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="about-version">v<span id="app-version">0.1.2</span></span>
+          </div>
+        </header>
+
+        <section class="about-card">
+          <p class="eyebrow">LOCAL · PRIVATE · LIVE</p>
+          <h2>本地、私密、实时的 LLM 用量仪表盘</h2>
+          <p class="about-copy">在一个桌面窗口里集中查看各家大模型供应商的今日用量、每日趋势、套餐额度、余额、成本估算与冷却时间。凭据仅保存在本机，按需直接请求供应商官方接口，不经过任何第三方服务器。</p>
+        </section>
+
+        <section class="about-grid" aria-label="应用信息">
+          <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.2</strong><small>由 Tauri 配置提供</small></article>
+          <article class="about-fact"><span>应用标识</span><strong>cn.ttpublic.llmusage</strong><small>Bundle Identifier</small></article>
+          <article class="about-fact"><span>技术栈</span><strong>Tauri 2 · Rust · TS</strong><small>原生壳 + Vite 前端</small></article>
+          <article class="about-fact"><span>供应商</span><strong id="about-provider-count">—</strong><small>可配置在线供应商</small></article>
+        </section>
+
+        <section class="about-card">
+          <p class="eyebrow">SECURITY</p>
+          <h2>隐私与安全</h2>
+          <ul class="about-list">
+            <li>密钥由 Windows DPAPI 加密保存，仅当前 Windows 用户可解密。</li>
+            <li>凭据不写入数据库或日志，仅在同步时交给 Rust 后端请求官方接口。</li>
+            <li>每日用量以非敏感日汇总形式保存在本地，仅用于趋势图。</li>
+            <li>所有网络请求仅指向你配置的供应商域名，可在开发者工具中核对。</li>
+          </ul>
         </section>
       </main>
     </div>

@@ -1,8 +1,14 @@
+use crate::providers::online::{OnlineDetailEntry, OnlineDetailSection};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
 
 const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
+
+/// GLM Coding Plan TOKENS_LIMIT is a 5-hour rolling usage window.
+/// The monitor API exposes only the next reset time, so the window start is
+/// derived by walking the known duration back from the reset timestamp.
+const GLM_WINDOW_MS: i64 = 5 * 60 * 60 * 1000;
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +18,7 @@ pub struct GlmUsageSnapshot {
     pub cooldown_ends_at_ms: i64,
     pub requests: u64,
     pub total_tokens: u64,
+    pub detail_sections: Vec<OnlineDetailSection>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -139,6 +146,11 @@ fn is_monitor_datetime(value: &str) -> bool {
     })
 }
 
+fn format_glm_value(value: f64) -> String {
+    let formatted = format!("{value:.1}");
+    formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 impl fmt::Display for GlmParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.code())
@@ -216,12 +228,32 @@ pub fn parse_snapshot(
         return Err(GlmParseError::SchemaMismatch);
     }
 
+    let used_percent = token_limit.percentage;
+    let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
+    let reset_at = token_limit.next_reset_time;
+    let detail_sections = vec![OnlineDetailSection {
+        title: "额度窗口".to_string(),
+        entries: vec![OnlineDetailEntry {
+            label: "Token 用量".to_string(),
+            used: Some(format_glm_value(used_percent)),
+            remaining: Some(format_glm_value(remaining_percent)),
+            limit: Some("100".to_string()),
+            unit: "%".to_string(),
+            used_percent: Some(used_percent),
+            window: Some("5 小时".to_string()),
+            start_at_ms: Some(reset_at - GLM_WINDOW_MS),
+            reset_at_ms: Some(reset_at),
+            remaining_ms: None,
+        }],
+    }];
+
     Ok(GlmUsageSnapshot {
         plan_level: quota_data.level,
-        used_percent: token_limit.percentage,
+        used_percent,
         cooldown_ends_at_ms: token_limit.next_reset_time,
         requests: usage_data.total_usage.total_model_call_count,
         total_tokens: usage_data.total_usage.total_tokens_usage,
+        detail_sections,
     })
 }
 
@@ -258,6 +290,17 @@ mod tests {
         assert_eq!(snapshot.cooldown_ends_at_ms, 1_783_686_600_000);
         assert_eq!(snapshot.requests, 17);
         assert_eq!(snapshot.total_tokens, 123_456);
+
+        assert_eq!(snapshot.detail_sections.len(), 1);
+        let entry = &snapshot.detail_sections[0].entries[0];
+        assert_eq!(entry.label, "Token 用量");
+        assert_eq!(entry.window.as_deref(), Some("5 小时"));
+        assert_eq!(entry.unit, "%");
+        assert_eq!(entry.used_percent, Some(68.5));
+        assert_eq!(entry.used.as_deref(), Some("68.5"));
+        assert_eq!(entry.remaining.as_deref(), Some("31.5"));
+        assert_eq!(entry.reset_at_ms, Some(1_783_686_600_000));
+        assert_eq!(entry.start_at_ms, Some(1_783_686_600_000 - GLM_WINDOW_MS));
     }
 
     #[test]

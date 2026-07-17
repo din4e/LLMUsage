@@ -877,12 +877,15 @@ fn kimi_detail_sections(
 ) -> Vec<OnlineDetailSection> {
     let mut windows = Vec::new();
     if let Ok(quota) = parse_quota(weekly) {
+        let reset_at = timestamp_field(weekly, "resetTime");
+        let start_at = reset_at.map(|r| r - 7 * 86_400_000);
         windows.push(quota_detail_entry(
             "周额度".to_string(),
-            None,
+            Some("7 天".to_string()),
             "%",
             &quota,
-            timestamp_field(weekly, "resetTime"),
+            start_at,
+            reset_at,
         ));
     }
     for (index, limit) in limits
@@ -896,13 +899,19 @@ fn kimi_detail_sections(
         let Ok(quota) = parse_quota(detail) else {
             continue;
         };
-        let (label, window) = kimi_window_label(limit.get("window"), index);
+        let (label, window, window_ms) = kimi_window_label(limit.get("window"), index);
+        let reset_at = timestamp_field(detail, "resetTime");
+        let start_at = match (reset_at, window_ms) {
+            (Some(reset), Some(duration)) => Some(reset - duration),
+            _ => None,
+        };
         windows.push(quota_detail_entry(
             label,
             window,
             "%",
             &quota,
-            timestamp_field(detail, "resetTime"),
+            start_at,
+            reset_at,
         ));
     }
 
@@ -941,6 +950,7 @@ fn quota_detail_entry(
     window: Option<String>,
     unit: &str,
     quota: &ParsedQuota,
+    start_at_ms: Option<i64>,
     reset_at_ms: Option<i64>,
 ) -> OnlineDetailEntry {
     OnlineDetailEntry {
@@ -951,7 +961,7 @@ fn quota_detail_entry(
         unit: unit.to_string(),
         used_percent: Some(quota.used_percent),
         window,
-        start_at_ms: None,
+        start_at_ms,
         reset_at_ms,
         remaining_ms: None,
     }
@@ -985,7 +995,13 @@ fn partial_quota_entry(label: &str, unit: &str, value: &Value) -> Option<OnlineD
     })
 }
 
-fn kimi_window_label(window: Option<&Value>, index: usize) -> (String, Option<String>) {
+fn kimi_window_label(
+    window: Option<&Value>,
+    index: usize,
+) -> (String, Option<String>, Option<i64>) {
+    const MINUTE_MS: i64 = 60_000;
+    const HOUR_MS: i64 = 3_600_000;
+    const DAY_MS: i64 = 86_400_000;
     let duration = window
         .and_then(|value| value.get("duration"))
         .and_then(number_like_i64)
@@ -999,18 +1015,24 @@ fn kimi_window_label(window: Option<&Value>, index: usize) -> (String, Option<St
         (Some(minutes), unit) if unit.contains("MINUTE") && minutes % 60 == 0 => (
             format!("{} 小时窗口", minutes / 60),
             Some(format!("{minutes} 分钟")),
+            Some(minutes * MINUTE_MS),
         ),
         (Some(minutes), unit) if unit.contains("MINUTE") => (
             format!("{minutes} 分钟窗口"),
             Some(format!("{minutes} 分钟")),
+            Some(minutes * MINUTE_MS),
         ),
-        (Some(hours), unit) if unit.contains("HOUR") => {
-            (format!("{hours} 小时窗口"), Some(format!("{hours} 小时")))
-        }
-        (Some(days), unit) if unit.contains("DAY") => {
-            (format!("{days} 天窗口"), Some(format!("{days} 天")))
-        }
-        _ => (format!("额度窗口 {}", index + 1), None),
+        (Some(hours), unit) if unit.contains("HOUR") => (
+            format!("{hours} 小时窗口"),
+            Some(format!("{hours} 小时")),
+            Some(hours * HOUR_MS),
+        ),
+        (Some(days), unit) if unit.contains("DAY") => (
+            format!("{days} 天窗口"),
+            Some(format!("{days} 天")),
+            Some(days * DAY_MS),
+        ),
+        _ => (format!("额度窗口 {}", index + 1), None, None),
     }
 }
 
@@ -2430,13 +2452,31 @@ mod tests {
         assert_eq!(windows.entries[0].limit.as_deref(), Some("100"));
         assert_eq!(windows.entries[0].unit, "%");
         assert_eq!(windows.entries[0].used_percent, Some(48.0));
+        assert_eq!(windows.entries[0].window.as_deref(), Some("7 天"));
         assert_eq!(windows.entries[0].reset_at_ms, Some(1_767_830_400_000));
+        assert_eq!(
+            windows.entries[0].start_at_ms,
+            Some(1_767_830_400_000 - 7 * 86_400_000)
+        );
 
         assert_eq!(windows.entries[1].label, "5 小时窗口");
         assert_eq!(windows.entries[1].window.as_deref(), Some("300 分钟"));
         assert_eq!(windows.entries[1].used_percent, Some(7.0));
+        assert_eq!(windows.entries[1].reset_at_ms, Some(1_767_243_600_000));
+        assert_eq!(
+            windows.entries[1].start_at_ms,
+            Some(1_767_243_600_000 - 300 * 60_000)
+        );
         assert_eq!(windows.entries[2].label, "1 小时窗口");
         assert_eq!(windows.entries[2].window.as_deref(), Some("60 分钟"));
+        assert_eq!(
+            windows.entries[2].reset_at_ms,
+            Some(1_767_243_600_000 - 4 * 3_600_000)
+        );
+        assert_eq!(
+            windows.entries[2].start_at_ms,
+            Some(1_767_243_600_000 - 4 * 3_600_000 - 60 * 60_000)
+        );
 
         let other = &snapshot.detail_sections[1];
         assert_eq!(other.title, "其他限制");

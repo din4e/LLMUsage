@@ -2,7 +2,7 @@
 
 > Windows 优先的轻量 LLM 用量仪表盘：在一个窗口里查看多家模型 API 与 Coding Plan 的今日用量、每日趋势、套餐余量、余额、成本估算和冷却时间。
 
-![版本](https://img.shields.io/badge/version-v0.1.1-087b5d)
+![版本](https://img.shields.io/badge/version-v0.1.2-087b5d)
 ![平台](https://img.shields.io/badge/platform-Windows_10%2F11-006ea6)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
 ![前端](https://img.shields.io/badge/frontend-TypeScript-F7DF1E)
@@ -11,14 +11,15 @@
 
 <p align="center"><sub>v0.1.1 桌面界面 · 截图使用演示数据，不包含真实账户或凭据信息</sub></p>
 
-## v0.1.1 有什么新变化
+## v0.1.2 有什么新变化
 
-v0.1.1 在 v0.1.0 的供应商在线状态基础上补齐了汇总与历史趋势能力。
+v0.1.2 新增「关于」页面，集中展示应用版本、标识、技术栈与隐私安全说明，并修正了 GLM 等仅暴露重置时间点的供应商的剩余时间显示。
 
 | 版本 | 能力 |
 | --- | --- |
 | v0.1.0 | 供应商在线用量、额度、余额、完整明细和凭据配置；尚未展示跨供应商汇总趋势 |
 | v0.1.1 | 增加今日请求/Token/成本汇总、每日 Token 趋势、最近 7 日/30 日/全部范围、提供商筛选，以及系统托盘工作流 |
+| v0.1.2 | 新增「关于」页面（版本、标识、技术栈、隐私与安全说明）；修正 GLM 等仅暴露重置时间点的供应商剩余时间显示 |
 
 ### 每日趋势
 

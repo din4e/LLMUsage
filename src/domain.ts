@@ -109,6 +109,30 @@ export function formatQuotaDetailValue(entry: OnlineDetailEntry): string {
   return values.join(" · ");
 }
 
+export function computeTimeWindowElapsedPercent(
+  startAtMs: number,
+  resetAtMs: number,
+  nowMs: number = Date.now(),
+): number | null {
+  if (!Number.isFinite(startAtMs) || !Number.isFinite(resetAtMs) || resetAtMs <= startAtMs) return null;
+  const total = resetAtMs - startAtMs;
+  const elapsed = Math.max(0, Math.min(total, nowMs - startAtMs));
+  const percent = (elapsed / total) * 100;
+  return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+}
+
+const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+export function formatResetRemainingText(
+  resetAtMs: number,
+  nowMs: number = Date.now(),
+): string | null {
+  if (!Number.isFinite(resetAtMs)) return null;
+  const remainingMs = Math.max(0, resetAtMs - nowMs);
+  const dayIndex = new Date(nowMs).getDay();
+  return `${WEEKDAY_LABELS[dayIndex]} · 剩余 ${formatDuration(remainingMs)}`;
+}
+
 export function formatDuration(durationMs: number): string {
   const totalMinutes = Math.max(0, Math.floor(durationMs / 60_000));
   if (totalMinutes < 1) return `${Math.max(0, Math.floor(durationMs / 1_000))} 秒`;
