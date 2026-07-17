@@ -195,7 +195,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   color: var(--accent);
 }
 .nav-item.active { box-shadow: inset 2px 0 var(--accent); }
-.theme-button { margin-top: auto; }
+.about-link { margin-top: auto; }
+.theme-button { margin-top: 5px; }
 
 main { width: min(1240px, 100%); margin: 0 auto; padding: 16px 24px 24px; }
 .topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
@@ -455,7 +456,8 @@ input:hover { border-color: var(--line-strong); }
   .rail { position: static; width: 100%; height: 46px; flex-direction: row; padding: 0 9px; border: 0; border-bottom: 1px solid var(--line); }
   .brand { margin: 0 13px 0 0; }
   .rail nav { display: flex; }
-  .theme-button { margin: 0 0 0 auto; }
+  .about-link { margin-left: auto; }
+  .theme-button { margin: 0 0 0 5px; }
   main { padding: 11px 9px 18px; }
   .topbar { align-items: flex-start; margin-bottom: 10px; }
   .topbar-actions { flex-direction: column-reverse; align-items: flex-end; gap: 5px; }
