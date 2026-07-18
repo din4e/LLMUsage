@@ -63,6 +63,15 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
             }
         });
 
+    // macOS menu bar expects a monochrome *template* image (alpha-only); the full
+    // app icon would render as a solid black blob. Other platforms keep the color icon.
+    #[cfg(target_os = "macos")]
+    {
+        let template = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))
+            .expect("tray template icon must be embedded");
+        builder = builder.icon(template).icon_as_template(true);
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }

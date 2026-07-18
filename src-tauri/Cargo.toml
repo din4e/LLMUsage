@@ -13,16 +13,23 @@ path = "src/lib.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-libloading = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 zeroize = "1"
+
+# Windows: DPAPI secret storage (crypt32.dll loaded dynamically).
+[target.'cfg(target_os = "windows")'.dependencies]
+libloading = "0.8"
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+# macOS: store credentials in the Keychain instead of DPAPI.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = "3"
 
 [profile.release]
 codegen-units = 16
