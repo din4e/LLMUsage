@@ -8,6 +8,7 @@ import {
   localDateKey,
   localDayRange,
   localDayRangeMs,
+  localQuarterSlot,
   selectDailyTrend,
   summarizeProviders,
   type DailyUsageRecord,
@@ -92,7 +93,7 @@ let autoSyncTimer: number | null = null;
 let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
-const APP_VERSION_FALLBACK = "0.1.2";
+const APP_VERSION_FALLBACK = "0.1.3";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
@@ -114,7 +115,7 @@ function renderTrend() {
   const providerId = trendProvider?.value || "all";
   const points = selectDailyTrend(dailyUsageRecords, selectedTrendRange, providerId);
   const selectedName = providerId === "all" ? "全部提供商" : providerName(providerId);
-  renderDailyTrendChart(trendChart, trendEmpty, trendDescription, points, selectedName);
+  renderDailyTrendChart(trendChart, trendEmpty, trendDescription, points, selectedName, selectedTrendRange === "24h");
 }
 
 async function loadDailyUsage() {
@@ -400,6 +401,7 @@ async function syncGlm() {
   try {
     renderGlm(await invoke<GlmSnapshot>("sync_glm", {
       localDate: localDateKey(),
+      slot: localQuarterSlot(),
       ...localDayRange(),
     }));
   } catch (reason) {
@@ -414,6 +416,7 @@ async function syncOnline(providerId: string) {
     renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", {
       providerId,
       localDate: localDateKey(),
+      slot: localQuarterSlot(),
       ...localDayRangeMs(),
     }));
   } catch (reason) {
@@ -430,12 +433,14 @@ async function syncAll() {
   }
   isSyncing = true;
   try {
-    if (configuredProviderIds.has("glm")) await syncGlm();
-    for (const provider of providerDefinitions.filter(
-      (item) => item.id !== "glm" && configuredProviderIds.has(item.id),
-    )) {
-      await syncOnline(provider.id);
-    }
+    const syncTasks: Promise<unknown>[] = [];
+    if (configuredProviderIds.has("glm")) syncTasks.push(syncGlm());
+    syncTasks.push(
+      ...providerDefinitions
+        .filter((item) => item.id !== "glm" && configuredProviderIds.has(item.id))
+        .map((provider) => syncOnline(provider.id)),
+    );
+    await Promise.all(syncTasks);
     renderTotals();
     await loadDailyUsage();
   } finally {
@@ -579,6 +584,7 @@ providerForm?.addEventListener("submit", async (event) => {
       const snapshot = await invoke<GlmSnapshot>("configure_glm", {
         apiKey: credential,
         localDate: localDateKey(),
+        slot: localQuarterSlot(),
         ...localDayRange(),
       });
       renderGlm(snapshot);
@@ -587,6 +593,7 @@ providerForm?.addEventListener("submit", async (event) => {
         providerId: selectedProvider,
         apiKey: credential,
         localDate: localDateKey(),
+        slot: localQuarterSlot(),
         ...localDayRangeMs(),
       });
       renderOnline(snapshot);

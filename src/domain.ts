@@ -4,10 +4,11 @@ export interface ProviderMetrics {
   estimatedCostCny: number | null;
 }
 
-export type TrendRange = "7d" | "30d" | "all";
+export type TrendRange = "24h" | "7d" | "30d" | "all";
 
 export interface DailyUsageRecord {
   date: string;
+  slot: number | null;
   providerId: string;
   requests: number | null;
   totalTokens: number | null;
@@ -16,6 +17,7 @@ export interface DailyUsageRecord {
 
 export interface DailyTrendPoint extends ProviderMetrics {
   date: string;
+  label: string;
 }
 
 export interface OnlineDetailSection {
@@ -57,27 +59,75 @@ export function localDateKey(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+/** Local-day 15-minute slot index 0..95 (e.g. 12:07 → 48). */
+export function localQuarterSlot(date = new Date()): number {
+  return Math.floor((date.getHours() * 60 + date.getMinutes()) / 15);
+}
+
+/** Format a 15-minute slot index as HH:MM (slot 48 → "12:00"). */
+export function formatQuarterSlot(slot: number): string {
+  const totalMinutes = Math.max(0, Math.min(95, Math.trunc(slot))) * 15;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
 export function selectDailyTrend(
   records: DailyUsageRecord[],
   range: TrendRange,
   providerId: string,
   today = new Date(),
 ): DailyTrendPoint[] {
-  const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  if (range !== "all") cutoff.setDate(cutoff.getDate() - (range === "7d" ? 6 : 29));
-  const cutoffKey = localDateKey(cutoff);
   const todayKey = localDateKey(today);
-  const byDate = new Map<string, ProviderMetrics[]>();
+  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
 
+  if (range === "24h") {
+    // Intraday: 15-minute slots for the current local day only.
+    const bySlot = new Map<number, ProviderMetrics[]>();
+    for (const record of records) {
+      if (record.date !== todayKey || record.slot == null) continue;
+      if (providerId !== "all" && record.providerId !== providerId) continue;
+      const metrics = bySlot.get(record.slot) ?? [];
+      metrics.push(record);
+      bySlot.set(record.slot, metrics);
+    }
+    return Array.from(bySlot, ([slot, metrics]) => ({
+      date: todayKey,
+      label: formatQuarterSlot(slot),
+      ...summarizeProviders(metrics),
+    }))
+      .filter((point) => point.totalTokens !== null)
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }
+
+  // Daily: usage figures are same-day cumulative snapshots, so each day's
+  // representative is the newest 15-minute sample — collapse intraday detail to
+  // the latest slot per (date, provider), never sum slots.
+  const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  cutoff.setDate(cutoff.getDate() - (range === "7d" ? 6 : 29));
+  const cutoffKey = localDateKey(cutoff);
+
+  const latest = new Map<string, DailyUsageRecord>();
   for (const record of records) {
     if (record.date > todayKey || (range !== "all" && record.date < cutoffKey)) continue;
     if (providerId !== "all" && record.providerId !== providerId) continue;
+    const key = `${record.date}|${record.providerId}`;
+    const existing = latest.get(key);
+    if (!existing || slotRank(record) >= slotRank(existing)) latest.set(key, record);
+  }
+
+  const byDate = new Map<string, ProviderMetrics[]>();
+  for (const record of latest.values()) {
     const metrics = byDate.get(record.date) ?? [];
     metrics.push(record);
     byDate.set(record.date, metrics);
   }
 
-  return Array.from(byDate, ([date, metrics]) => ({ date, ...summarizeProviders(metrics) }))
+  return Array.from(byDate, ([date, metrics]) => ({
+    date,
+    label: date.slice(5).replace("-", "/"),
+    ...summarizeProviders(metrics),
+  }))
     .filter((point) => point.totalTokens !== null)
     .sort((left, right) => left.date.localeCompare(right.date));
 }

@@ -65,6 +65,7 @@
               <label for="trend-provider">提供商</label>
               <select id="trend-provider"><option value="all">全部提供商</option></select>
               <div class="range-switch" id="trend-range" aria-label="趋势时间范围">
+                <button type="button" data-range="24h" aria-pressed="false">今日</button>
                 <button type="button" data-range="7d" aria-pressed="true">最近 7 日</button>
                 <button type="button" data-range="30d" aria-pressed="false">最近 30 日</button>
                 <button type="button" data-range="all" aria-pressed="false">全部</button>
@@ -101,7 +102,7 @@
             <h1>关于 LLM Usage</h1>
           </div>
           <div class="topbar-actions">
-            <span class="about-version">v<span id="app-version">0.1.2</span></span>
+            <span class="about-version">v<span id="app-version">0.1.3</span></span>
           </div>
         </header>
 
@@ -112,7 +113,7 @@
         </section>
 
         <section class="about-grid" aria-label="应用信息">
-          <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.2</strong><small>由 Tauri 配置提供</small></article>
+          <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.3</strong><small>由 Tauri 配置提供</small></article>
           <article class="about-fact"><span>应用标识</span><strong>cn.ttpublic.llmusage</strong><small>Bundle Identifier</small></article>
           <article class="about-fact"><span>技术栈</span><strong>Tauri 2 · Rust · TS</strong><small>原生壳 + Vite 前端</small></article>
           <article class="about-fact"><span>供应商</span><strong id="about-provider-count">—</strong><small>可配置在线供应商</small></article>

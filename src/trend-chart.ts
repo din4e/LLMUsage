@@ -9,6 +9,7 @@ export function renderDailyTrendChart(
   descriptionElement: HTMLElement | null,
   points: DailyTrendPoint[],
   selectedName: string,
+  intraday: boolean,
 ) {
   chart.replaceChildren();
   if (empty) empty.hidden = points.length > 0;
@@ -60,13 +61,13 @@ export function renderDailyTrendChart(
     circle.setAttribute("class", "trend-point");
     circle.setAttribute("cx", String(x(index)));
     circle.setAttribute("cy", String(y(point.totalTokens ?? 0)));
-    circle.setAttribute("r", "4");
+    circle.setAttribute("r", points.length > 48 ? "2" : "4");
     circle.setAttribute("tabindex", "0");
     const cost = point.estimatedCostCny == null
       ? "成本不可用"
       : `成本 ¥${point.estimatedCostCny.toFixed(2)}`;
     const requests = point.requests == null ? "请求数不可用" : `${formatInteger(point.requests)} 次请求`;
-    const pointDescription = `${point.date}，${formatInteger(point.totalTokens ?? 0)} Token，${requests}，${cost}`;
+    const pointDescription = `${point.label}，${formatInteger(point.totalTokens ?? 0)} Token，${requests}，${cost}`;
     circle.setAttribute("aria-label", pointDescription);
     const title = svgElement("title");
     title.textContent = pointDescription;
@@ -79,13 +80,16 @@ export function renderDailyTrendChart(
       label.setAttribute("x", String(x(index)));
       label.setAttribute("y", String(height - 9));
       label.setAttribute("text-anchor", index === 0 ? "start" : index === points.length - 1 ? "end" : "middle");
-      label.textContent = point.date.slice(5).replace("-", "/");
+      label.textContent = point.label;
       chart.append(label);
     }
   });
 
-  const totalTokens = points.reduce((total, point) => total + (point.totalTokens ?? 0), 0);
-  const description = `${selectedName} · ${points.length} 个有记录日期 · 合计 ${formatInteger(totalTokens)} Token`;
+  const totalTokens = intraday
+    ? points[points.length - 1]?.totalTokens ?? 0
+    : points.reduce((total, point) => total + (point.totalTokens ?? 0), 0);
+  const totalLabel = intraday ? "今日累计" : "合计";
+  const description = `${selectedName} · ${points.length} 个数据点 · ${totalLabel} ${formatInteger(totalTokens)} Token`;
   chart.setAttribute("aria-label", description);
   if (descriptionElement) descriptionElement.textContent = `本地保存的非敏感日汇总 · ${description}`;
 }

@@ -252,6 +252,7 @@ pub async fn configure_glm(
     app: tauri::AppHandle,
     api_key: String,
     local_date: String,
+    slot: Option<i16>,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
@@ -279,6 +280,7 @@ pub async fn configure_glm(
         &app,
         DailyUsageRecord {
             date: local_date,
+            slot,
             provider_id: "glm".into(),
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
@@ -292,6 +294,7 @@ pub async fn configure_glm(
 pub async fn sync_glm(
     app: tauri::AppHandle,
     local_date: String,
+    slot: Option<i16>,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
@@ -316,6 +319,7 @@ pub async fn sync_glm(
         &app,
         DailyUsageRecord {
             date: local_date,
+            slot,
             provider_id: "glm".into(),
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
@@ -331,6 +335,7 @@ pub async fn configure_online_provider(
     provider_id: String,
     api_key: String,
     local_date: String,
+    slot: Option<i16>,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
@@ -365,6 +370,7 @@ pub async fn configure_online_provider(
         &app,
         DailyUsageRecord {
             date: local_date,
+            slot,
             provider_id: provider.id().into(),
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
@@ -379,6 +385,7 @@ pub async fn sync_online_provider(
     app: tauri::AppHandle,
     provider_id: String,
     local_date: String,
+    slot: Option<i16>,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
@@ -408,6 +415,7 @@ pub async fn sync_online_provider(
         &app,
         DailyUsageRecord {
             date: local_date,
+            slot,
             provider_id: provider.id().into(),
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
