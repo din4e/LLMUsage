@@ -115,11 +115,36 @@ impl SecretVault {
         String::from_utf8(unprotect(&ciphertext)?).map_err(|_| SecretError::Invalid)
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn delete(&self) -> Result<(), SecretError> {
+        // Idempotent: deleting a credential that was never saved (or already
+        // removed) succeeds so the UI can treat "forget provider" uniformly.
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(SecretError::Io),
+        }
+    }
+
     #[cfg(not(target_os = "windows"))]
     pub fn load(&self) -> Result<String, SecretError> {
         self.keychain_entry()?
             .get_password()
             .map_err(map_keyring_error)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn delete(&self) -> Result<(), SecretError> {
+        // keyring 3.x exposes `delete_credential`, which returns `NoEntry` when
+        // the item never existed. Treat that as success so forgetting a provider
+        // is idempotent regardless of prior keychain state.
+        match self.keychain_entry()?.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(error) => match map_keyring_error(error) {
+                SecretError::Missing => Ok(()),
+                other => Err(other),
+            },
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -265,5 +290,25 @@ mod tests {
         assert!(glm.path.ends_with(Path::new("credentials/glm.dpapi")));
         assert!(kimi.path.ends_with(Path::new("credentials/kimi.dpapi")));
         assert_ne!(glm.path, kimi.path);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn deletes_a_stored_dpapi_credential_and_is_idempotent() {
+        let dir = std::env::temp_dir()
+            .join(format!("llm-usage-secret-delete-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let vault = SecretVault::new(&dir, "kimi").expect("valid provider id");
+
+        vault.save("test-only-secret").expect("save secret");
+        assert!(vault.exists());
+
+        vault.delete().expect("delete removes the stored credential");
+        assert!(!vault.exists());
+
+        // Forgetting a provider must be safe to repeat.
+        vault.delete().expect("delete is idempotent when already gone");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

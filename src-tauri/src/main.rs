@@ -32,6 +32,7 @@ fn main() {
             app::configure_online_provider,
             app::sync_glm,
             app::sync_online_provider,
+            app::delete_provider,
             app::has_glm_credential,
             app::has_online_credential,
             app::load_cached_snapshots,

@@ -84,6 +84,11 @@ const trendRange = byId<HTMLElement>("trend-range");
 const trendChart = document.getElementById("trend-chart") as SVGSVGElement | null;
 const trendEmpty = byId<HTMLElement>("trend-empty");
 const trendDescription = byId<HTMLElement>("trend-description");
+const confirmDialog = byId<HTMLDialogElement>("confirm-dialog");
+const confirmForm = byId<HTMLFormElement>("confirm-form");
+const confirmMessage = byId<HTMLElement>("confirm-message");
+const confirmAccept = byId<HTMLButtonElement>("confirm-accept");
+let pendingDeleteProvider: string | null = null;
 const configuredProviderIds = new Set<string>();
 let selectedProvider = "glm";
 let glmResetAt: number | null = null;
@@ -93,7 +98,7 @@ let autoSyncTimer: number | null = null;
 let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
-const APP_VERSION_FALLBACK = "0.1.3";
+const APP_VERSION_FALLBACK = "0.1.4";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
@@ -194,12 +199,24 @@ function createProviderRow(provider: ProviderDefinition): HTMLElement {
   configure.dataset.provider = provider.id;
   configure.textContent = "修改配置";
 
+  const remove = document.createElement("button");
+  remove.className = "row-action danger";
+  remove.type = "button";
+  remove.dataset.action = "delete-provider";
+  remove.dataset.provider = provider.id;
+  remove.setAttribute("aria-label", `删除 ${provider.name}`);
+  remove.textContent = "删除";
+
+  const actions = document.createElement("div");
+  actions.className = "row-actions";
+  actions.append(configure, remove);
+
   const details = document.createElement("div");
   details.className = "provider-details";
   details.id = `${provider.id}-details`;
   details.setAttribute("aria-label", `${provider.name}完整明细`);
   details.hidden = true;
-  row.append(identity, usage, quota, configure, details);
+  row.append(identity, usage, quota, actions, details);
   return row;
 }
 
@@ -299,6 +316,7 @@ async function populateAboutMetadata() {
   const version = isTauri() ? await getVersion().catch(() => APP_VERSION_FALLBACK) : APP_VERSION_FALLBACK;
   setText("app-version", version);
   setText("app-version-detail", version);
+  setText("window-version", `v${version}`);
   setText("about-provider-count", String(providerDefinitions.length));
 }
 
@@ -452,6 +470,16 @@ function providerName(providerId: string) {
   return providerDefinition(providerId)?.name ?? "供应商";
 }
 
+function deleteProvider(providerId: string) {
+  const provider = providerDefinition(providerId);
+  if (!provider || !isTauri()) return;
+  pendingDeleteProvider = providerId;
+  if (confirmMessage) {
+    confirmMessage.textContent = `删除「${provider.name}」会清除本机保存的 API Key 与缓存摘要，但不影响已保存的历史趋势。确定继续吗？`;
+  }
+  confirmDialog?.showModal();
+}
+
 async function loadConfiguredProviders() {
   if (!isTauri()) {
     renderProviderVisibility();
@@ -533,7 +561,17 @@ document.addEventListener("click", (event) => {
     catalogDialog?.showModal();
     return;
   }
-  if (button.dataset.action === "configure") openProviderDialog(button.dataset.provider ?? "glm");
+  if (button.dataset.action === "configure") {
+    openProviderDialog(button.dataset.provider ?? "glm");
+    return;
+  }
+  if (button.dataset.action === "delete-provider") {
+    deleteProvider(button.dataset.provider ?? "");
+    return;
+  }
+  if (button.dataset.action === "close-confirm-dialog") {
+    confirmDialog?.close();
+  }
 });
 
 function openProviderDialog(providerId: string) {
@@ -614,6 +652,43 @@ providerForm?.addEventListener("submit", async (event) => {
 });
 
 dialog?.addEventListener("close", () => credentialFields?.replaceChildren());
+
+confirmForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const providerId = pendingDeleteProvider;
+  if (!providerId || !confirmAccept) {
+    confirmDialog?.close();
+    return;
+  }
+  confirmAccept.disabled = true;
+  confirmAccept.textContent = "删除中…";
+  try {
+    await invoke("delete_provider", { providerId });
+    configuredProviderIds.delete(providerId);
+    onlineSnapshots.delete(providerId);
+    if (providerId === "glm") glmSnapshot = null;
+    renderProviderVisibility();
+    renderTotals();
+    await loadDailyUsage();
+    setStatus(`已删除 ${providerName(providerId)}`);
+  } catch (reason) {
+    const error = reason as CommandError;
+    setStatus(`${providerName(providerId)}：${error.message ?? "删除失败"}`, "error");
+  } finally {
+    pendingDeleteProvider = null;
+    confirmDialog?.close();
+    confirmAccept.disabled = false;
+    confirmAccept.textContent = "删除";
+  }
+});
+
+confirmDialog?.addEventListener("close", () => {
+  pendingDeleteProvider = null;
+  if (confirmAccept) {
+    confirmAccept.disabled = false;
+    confirmAccept.textContent = "删除";
+  }
+});
 trendProvider?.addEventListener("change", renderTrend);
 trendRange?.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLButtonElement>("button[data-range]");

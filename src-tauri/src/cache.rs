@@ -159,6 +159,20 @@ impl SnapshotCache {
         snapshots.sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
         Ok(snapshots)
     }
+
+    /// Remove a provider's cached snapshot. Safe to call when nothing is cached
+    /// for the provider; rejects ids that could escape the cache directory.
+    pub fn delete(&self, provider_id: &str) -> Result<(), CacheError> {
+        if !is_safe_id(provider_id) {
+            return Err(CacheError::Invalid);
+        }
+        let path = self.dir.join(format!("{provider_id}.json"));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(CacheError::Io),
+        }
+    }
 }
 
 fn is_safe_id(value: &str) -> bool {
@@ -245,7 +259,15 @@ mod tests {
     use super::*;
 
     fn test_dir() -> PathBuf {
-        std::env::temp_dir().join(format!("llm-usage-cache-test-{}", std::process::id()))
+        // Tests run in parallel threads inside one process, so a path keyed
+        // only on the pid would collide between tests and corrupt each other's
+        // assertions. Hand out a fresh directory per call instead.
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "llm-usage-cache-test-{}-{seq}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -283,6 +305,51 @@ mod tests {
             cache.save("glm", "../online", serde_json::json!({})),
             Err(CacheError::Invalid)
         ));
+    }
+
+    #[test]
+    fn delete_removes_a_provider_snapshot() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = SnapshotCache::new(&dir);
+
+        cache
+            .save(
+                "minimax_cn",
+                "online",
+                serde_json::json!({"primaryValue": "10%"}),
+            )
+            .expect("save cache");
+        assert_eq!(cache.load_all().expect("load").len(), 1);
+
+        cache.delete("minimax_cn").expect("delete snapshot");
+
+        assert!(cache
+            .load_all()
+            .expect("load after delete")
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_is_idempotent_when_no_snapshot_exists() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = SnapshotCache::new(&dir);
+
+        // Nothing was ever cached for this provider; forgetting it still works.
+        cache.delete("kimi_cn").expect("delete is idempotent");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_rejects_provider_ids_that_could_escape_the_cache_dir() {
+        let cache = SnapshotCache::new(Path::new("C:/app"));
+
+        assert!(matches!(cache.delete("../glm"), Err(CacheError::Invalid)));
+        assert!(matches!(cache.delete("GLM"), Err(CacheError::Invalid)));
+        assert!(matches!(cache.delete(""), Err(CacheError::Invalid)));
     }
 
     #[test]

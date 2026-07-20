@@ -12,6 +12,7 @@
       <div class="window-drag-region" data-tauri-drag-region>
         <span class="window-app-symbol" aria-hidden="true">◇</span>
         <strong>LLM Usage</strong>
+        <span class="window-version" id="window-version">v0.1.4</span>
         <span class="window-runtime"><i></i> TRAY SERVICE</span>
       </div>
       <div class="window-controls" aria-label="窗口控制">
@@ -102,7 +103,7 @@
             <h1>关于 LLM Usage</h1>
           </div>
           <div class="topbar-actions">
-            <span class="about-version">v<span id="app-version">0.1.3</span></span>
+            <span class="about-version">v<span id="app-version">0.1.4</span></span>
           </div>
         </header>
 
@@ -113,7 +114,7 @@
         </section>
 
         <section class="about-grid" aria-label="应用信息">
-          <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.3</strong><small>由 Tauri 配置提供</small></article>
+          <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.4</strong><small>由 Tauri 配置提供</small></article>
           <article class="about-fact"><span>应用标识</span><strong>cn.ttpublic.llmusage</strong><small>Bundle Identifier</small></article>
           <article class="about-fact"><span>技术栈</span><strong>Tauri 2 · Rust · TS</strong><small>原生壳 + Vite 前端</small></article>
           <article class="about-fact"><span>供应商</span><strong id="about-provider-count">—</strong><small>可配置在线供应商</small></article>
@@ -146,6 +147,14 @@
         <div class="dialog-heading"><div><p class="eyebrow">PROVIDER CATALOG</p><h2 id="catalog-title">添加供应商</h2></div><button type="button" class="close-button" data-action="close-catalog-dialog" aria-label="关闭">×</button></div>
         <p class="dialog-copy">只展示真实可查询的在线能力；不同地区和凭据类型分开配置。</p>
         <div class="provider-catalog" id="provider-catalog"></div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+      <form id="confirm-form">
+        <div class="dialog-heading"><div><p class="eyebrow">CONFIRM</p><h2 id="confirm-title">确认删除</h2></div><button type="button" class="close-button" data-action="close-confirm-dialog" aria-label="关闭">×</button></div>
+        <p class="dialog-copy" id="confirm-message">确定要删除该供应商吗？</p>
+        <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-confirm-dialog">取消</button><button type="submit" id="confirm-accept" class="refresh-button">删除</button></div>
       </form>
     </dialog>
 

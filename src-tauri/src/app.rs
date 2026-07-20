@@ -19,9 +19,18 @@ pub struct CommandError {
 
 impl CommandError {
     fn credential() -> Self {
+        // Same code across platforms; the message points the user at the
+        // correct credential store instead of always mentioning Windows.
+        let message = if cfg!(target_os = "windows") {
+            "无法访问 Windows 凭据管理器"
+        } else if cfg!(target_os = "macos") {
+            "无法访问 macOS 钥匙串（Keychain），请在系统钥匙串中允许访问，或删除该供应商后重新配置"
+        } else {
+            "无法访问本机凭据存储"
+        };
         Self {
             code: "CREDENTIAL_ERROR",
-            message: "无法访问 Windows 凭据管理器",
+            message,
         }
     }
 
@@ -423,6 +432,34 @@ pub async fn sync_online_provider(
         },
     )?;
     Ok(snapshot)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn delete_provider(app: tauri::AppHandle, provider_id: String) -> Result<(), CommandError> {
+    // 1. Remove the stored credential. Forgetting a provider is idempotent:
+    //    `SecretVault::delete` swallows a Missing entry (never configured, or
+    //    already removed) so the UI never has to special-case prior state.
+    let secret_result: Result<(), SecretError> = if provider_id == "glm" {
+        match glm_vault(&app) {
+            Ok(vault) => vault.delete(),
+            Err(command_error) => return Err(command_error),
+        }
+    } else {
+        let provider = online_provider(&provider_id)?;
+        match provider_vault(&app, provider) {
+            Ok(vault) => vault.delete(),
+            Err(command_error) => return Err(command_error),
+        }
+    };
+    if secret_result.is_err() {
+        // Only genuine storage failures survive past the idempotent delete().
+        return Err(CommandError::credential());
+    }
+    // 2. Drop the cached snapshot so the dashboard does not keep stale data.
+    snapshot_cache(&app)?
+        .delete(&provider_id)
+        .map_err(|_| CommandError::credential())?;
+    Ok(())
 }
 
 #[cfg(test)]
