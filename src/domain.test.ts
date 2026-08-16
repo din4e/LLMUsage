@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  baseProviderId,
   computeTimeWindowElapsedPercent,
   credentialHint,
   formatCooldown,
@@ -8,6 +9,8 @@ import {
   formatQuotaDetailValue,
   formatQuarterSlot,
   formatResetRemainingText,
+  instanceIndexOf,
+  isProviderInstanceId,
   localDayRange,
   localDayRangeMs,
   localQuarterSlot,
@@ -15,6 +18,32 @@ import {
   summarizeProviders,
   type DailyUsageRecord,
 } from "./domain";
+
+describe("provider instance ids", () => {
+  it("strips only canonical instance suffixes", () => {
+    expect(baseProviderId("glm")).toBe("glm");
+    expect(baseProviderId("glm_2")).toBe("glm");
+    expect(baseProviderId("kimi_cn")).toBe("kimi_cn");
+    expect(baseProviderId("kimi_cn_2")).toBe("kimi_cn");
+    expect(baseProviderId("siliconflow_global_12")).toBe("siliconflow_global");
+    expect(baseProviderId("glm_1")).toBe("glm_1");
+    expect(baseProviderId("glm_02")).toBe("glm_02");
+    expect(baseProviderId("kimi_cn_x")).toBe("kimi_cn_x");
+  });
+
+  it("numbers instances with 1 for the bare base id", () => {
+    expect(instanceIndexOf("glm")).toBe(1);
+    expect(instanceIndexOf("glm_2")).toBe(2);
+    expect(instanceIndexOf("qwen_global_12")).toBe(12);
+  });
+
+  it("matches instances of the same base provider", () => {
+    expect(isProviderInstanceId("kimi_cn", "kimi_cn")).toBe(true);
+    expect(isProviderInstanceId("kimi_cn_2", "kimi_cn")).toBe(true);
+    expect(isProviderInstanceId("kimi_global_2", "kimi_cn")).toBe(false);
+    expect(isProviderInstanceId("kimi_cn", "kimi_global")).toBe(false);
+  });
+});
 
 describe("formatCooldown", () => {
   it("formats a future reset using hours and minutes", () => {

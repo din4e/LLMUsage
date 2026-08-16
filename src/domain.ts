@@ -38,6 +38,32 @@ export interface OnlineDetailEntry {
   remainingMs?: number | null;
 }
 
+const INSTANCE_SUFFIX_PATTERN = /_(\d+)$/;
+
+/**
+ * `kimi_cn_2` → `kimi_cn`; bare ids (including `kimi_cn`) stay unchanged.
+ * Only canonical suffixes (index ≥ 2, no leading zero) are stripped.
+ */
+export function baseProviderId(instanceId: string): string {
+  const match = INSTANCE_SUFFIX_PATTERN.exec(instanceId);
+  const suffix = match?.[1];
+  if (!suffix) return instanceId;
+  const index = Number(suffix);
+  const canonical = index >= 2 && !suffix.startsWith("0");
+  return canonical ? instanceId.slice(0, match.index) : instanceId;
+}
+
+/** Instance position within its provider: 1 for the bare base id. */
+export function instanceIndexOf(instanceId: string): number {
+  const base = baseProviderId(instanceId);
+  return base === instanceId ? 1 : Number(instanceId.slice(base.length + 1));
+}
+
+/** True when `instanceId` belongs to `baseId`, e.g. `kimi_cn_2` → `kimi_cn`. */
+export function isProviderInstanceId(instanceId: string, baseId: string): boolean {
+  return baseProviderId(instanceId) === baseId;
+}
+
 export function localDayRange(date = new Date()): { startTime: string; endTime: string } {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");

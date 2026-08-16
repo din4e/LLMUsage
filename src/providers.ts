@@ -1,3 +1,4 @@
+import anthropicLogo from "@lobehub/icons-static-svg/icons/anthropic.svg";
 import claudeCodeLogo from "@lobehub/icons-static-svg/icons/claudecode-color.svg";
 import codexLogo from "@lobehub/icons-static-svg/icons/codex-color.svg";
 import deepSeekLogo from "@lobehub/icons-static-svg/icons/deepseek-color.svg";
@@ -5,9 +6,12 @@ import geminiLogo from "@lobehub/icons-static-svg/icons/gemini-color.svg";
 import kimiLogo from "@lobehub/icons-static-svg/icons/kimi-color.svg";
 import miniMaxLogo from "@lobehub/icons-static-svg/icons/minimax-color.svg";
 import openRouterLogo from "@lobehub/icons-static-svg/icons/openrouter.svg";
+import ppioLogo from "@lobehub/icons-static-svg/icons/ppio-color.svg";
 import qwenLogo from "@lobehub/icons-static-svg/icons/qwen-color.svg";
 import siliconCloudLogo from "@lobehub/icons-static-svg/icons/siliconcloud-color.svg";
+import xaiLogo from "@lobehub/icons-static-svg/icons/xai.svg";
 import zhipuLogo from "@lobehub/icons-static-svg/icons/zhipu-color.svg";
+import { baseProviderId } from "./domain";
 
 export interface ProviderField {
   id: string;
@@ -124,6 +128,33 @@ export const providerDefinitions: ProviderDefinition[] = [
     fields: [apiKeyField("Admin API Key", "sk-ant-admin01-…")],
   },
   {
+    id: "anthropic_api",
+    name: "Anthropic API",
+    subtitle: "组织 Messages 用量 · Admin API",
+    logo: anthropicLogo,
+    credentialHint: "需要 Anthropic Admin API Key（sk-ant-admin01-…）。按模型统计组织内 Messages API 的输入、缓存与输出 Token；不包含余额或订阅额度。与 Claude Code 分析使用同一类密钥，可分别配置。",
+    fields: [apiKeyField("Admin API Key", "sk-ant-admin01-…")],
+  },
+  {
+    id: "xai",
+    name: "xAI / Grok",
+    subtitle: "Management API · 预付余额",
+    logo: xaiLogo,
+    credentialHint: "需要 xAI 控制台生成的 Management Key（Read 权限）与团队 ID；推理用 API Key（xai-…）无法查询余额。展示预付余额与今日消耗。",
+    fields: [
+      { id: "managementKey", label: "Management Key", type: "password", placeholder: "控制台 Settings 生成", autocomplete: "off" },
+      { id: "teamId", label: "Team ID", type: "text", placeholder: "例如 1234567890", autocomplete: "off" },
+    ],
+  },
+  {
+    id: "ppio",
+    name: "PPIO 派欧云",
+    subtitle: "中国 · 官方余额",
+    logo: ppioLogo,
+    credentialHint: "使用 PPIO 开放平台 API Key（Bearer）。查询可用余额、现金余额与信用额度；用量需在控制台查看。",
+    fields: [apiKeyField()],
+  },
+  {
     id: "gemini",
     name: "Gemini Code Assist",
     subtitle: "Google Cloud Monitoring",
@@ -161,15 +192,27 @@ function qwenFields(): ProviderField[] {
 }
 
 export function providerDefinition(providerId: string): ProviderDefinition | undefined {
-  return providerDefinitions.find((provider) => provider.id === providerId);
+  const base = baseProviderId(providerId);
+  return providerDefinitions.find((provider) => provider.id === base);
 }
 
-export function configuredProviders(configured: ReadonlySet<string>): ProviderDefinition[] {
-  return providerDefinitions.filter((provider) => configured.has(provider.id));
+/** True when at least one instance of the provider is configured. */
+export function hasConfiguredInstance(baseId: string, configured: ReadonlySet<string>): boolean {
+  for (const instanceId of configured) {
+    if (baseProviderId(instanceId) === baseId) return true;
+  }
+  return false;
 }
 
-export function unconfiguredProviders(configured: ReadonlySet<string>): ProviderDefinition[] {
-  return providerDefinitions.filter((provider) => !configured.has(provider.id));
+/** The instance id to use when adding another account of `baseId`. */
+export function nextInstanceId(baseId: string, configured: ReadonlySet<string>): string {
+  let maxIndex = 0;
+  for (const instanceId of configured) {
+    if (baseProviderId(instanceId) === baseId) {
+      maxIndex = Math.max(maxIndex, Number(instanceId.slice(baseId.length + 1)) || 1);
+    }
+  }
+  return maxIndex === 0 ? baseId : `${baseId}_${maxIndex + 1}`;
 }
 
 export function serializeProviderCredential(

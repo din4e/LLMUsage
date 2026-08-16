@@ -3,8 +3,11 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { renderProviderDetails } from "./details";
 import {
+  baseProviderId,
   formatCooldown,
   formatInteger,
+  instanceIndexOf,
+  isProviderInstanceId,
   localDateKey,
   localDayRange,
   localDayRangeMs,
@@ -16,10 +19,11 @@ import {
   type TrendRange,
 } from "./domain";
 import {
+  hasConfiguredInstance,
+  nextInstanceId,
   providerDefinition,
   providerDefinitions,
   serializeProviderCredential,
-  unconfiguredProviders,
   type ProviderDefinition,
 } from "./providers";
 import { initializeWindowControls } from "./window-controls";
@@ -88,12 +92,14 @@ const confirmDialog = byId<HTMLDialogElement>("confirm-dialog");
 const confirmForm = byId<HTMLFormElement>("confirm-form");
 const confirmMessage = byId<HTMLElement>("confirm-message");
 const confirmAccept = byId<HTMLButtonElement>("confirm-accept");
-let pendingDeleteProvider: string | null = null;
-const configuredProviderIds = new Set<string>();
-let selectedProvider = "glm";
-let glmResetAt: number | null = null;
-let glmSnapshot: GlmSnapshot | null = null;
+let pendingDeleteInstance: string | null = null;
+const configuredInstanceIds = new Set<string>();
+let selectedInstance = "glm";
+const glmSnapshots = new Map<string, GlmSnapshot>();
 const onlineSnapshots = new Map<string, OnlineSnapshot>();
+const PROVIDER_ORDER_KEY = "llm-usage:provider-order";
+const savedInstanceOrder = loadSavedInstanceOrder();
+let dragSourceRow: HTMLElement | null = null;
 let autoSyncTimer: number | null = null;
 let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
@@ -104,8 +110,8 @@ function renderTrendProviderOptions() {
   if (!trendProvider) return;
   const selected = trendProvider.value || "all";
   const providerIds = new Set([
-    ...configuredProviderIds,
-    ...dailyUsageRecords.map((record) => record.providerId),
+    ...Array.from(configuredInstanceIds, baseProviderId),
+    ...dailyUsageRecords.map((record) => baseProviderId(record.providerId)),
   ]);
   const options = [new Option("全部提供商", "all")];
   for (const provider of providerDefinitions) {
@@ -118,7 +124,10 @@ function renderTrendProviderOptions() {
 function renderTrend() {
   if (!trendChart) return;
   const providerId = trendProvider?.value || "all";
-  const points = selectDailyTrend(dailyUsageRecords, selectedTrendRange, providerId);
+  const records = providerId === "all"
+    ? dailyUsageRecords
+    : dailyUsageRecords.filter((record) => isProviderInstanceId(record.providerId, providerId));
+  const points = selectDailyTrend(records, selectedTrendRange, providerId);
   const selectedName = providerId === "all" ? "全部提供商" : providerName(providerId);
   renderDailyTrendChart(trendChart, trendEmpty, trendDescription, points, selectedName, selectedTrendRange === "24h");
 }
@@ -135,76 +144,95 @@ async function loadDailyUsage() {
   renderTrend();
 }
 
-function initializeProviderRows() {
-  if (!providerList) return;
-  providerList.replaceChildren(...providerDefinitions.map(createProviderRow));
-  renderProviderVisibility();
+function ensureProviderRow(instanceId: string): HTMLElement | null {
+  const existing = providerList?.querySelector<HTMLElement>(
+    `.provider-row[data-provider="${instanceId}"]`,
+  );
+  if (existing) return existing;
+  const row = createProviderRow(instanceId);
+  if (row) providerList?.append(row);
+  return row;
 }
 
-function createProviderRow(provider: ProviderDefinition): HTMLElement {
+function createProviderRow(instanceId: string): HTMLElement | null {
+  const provider = providerDefinition(instanceId);
+  if (!provider) return null;
+  const base = provider.id;
+  const isGlm = base === "glm";
+  const index = instanceIndexOf(instanceId);
+  const displayName = instanceDisplayName(provider, index);
   const row = document.createElement("article");
-  row.className = `provider-row${provider.id === "glm" ? " featured" : ""}`;
-  row.dataset.provider = provider.id;
+  row.className = `provider-row${isGlm ? " featured" : ""}`;
+  row.dataset.provider = instanceId;
   row.hidden = true;
+
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "drag-handle";
+  handle.textContent = "⠿";
+  handle.title = "拖拽调整顺序，或按 Alt+↑/↓ 移动";
+  handle.setAttribute("aria-label", `调整 ${displayName} 顺序：按住 Alt 并使用上下箭头移动`);
+  attachRowDragging(row, handle);
 
   const identity = document.createElement("div");
   identity.className = "provider-identity";
+  identity.title = `${provider.name} · ${provider.subtitle}`;
   const mark = document.createElement("img");
   mark.className = "provider-mark";
   mark.src = provider.logo;
-  mark.alt = `${provider.name} 图标`;
-  const identityCopy = document.createElement("div");
+  mark.alt = "";
   const heading = document.createElement("h3");
   heading.textContent = provider.name;
-  const subtitle = document.createElement("p");
-  subtitle.textContent = provider.subtitle;
-  identityCopy.append(heading, subtitle);
-  identity.append(mark, identityCopy);
+  if (index >= 2) {
+    const badge = document.createElement("span");
+    badge.className = "instance-badge";
+    badge.textContent = `实例 ${index}`;
+    heading.append(badge);
+  }
+  identity.append(mark, heading);
 
   const usage = document.createElement("div");
   usage.className = "usage-cell";
   const usageLabel = document.createElement("span");
-  usageLabel.textContent = provider.id === "glm" ? "今日 Token" : "在线摘要";
+  usageLabel.textContent = isGlm ? "今日 Token" : "在线摘要";
   const usageValue = document.createElement("strong");
-  usageValue.id = provider.id === "glm" ? "glm-tokens" : `${provider.id}-primary`;
+  usageValue.id = isGlm ? `${instanceId}-tokens` : `${instanceId}-primary`;
   usageValue.textContent = "等待同步";
   const usageHint = document.createElement("small");
-  usageHint.id = provider.id === "glm" ? "glm-requests" : `${provider.id}-secondary`;
+  usageHint.id = isGlm ? `${instanceId}-requests` : `${instanceId}-secondary`;
   usageHint.textContent = "已保存凭据";
   usage.append(usageLabel, usageValue, usageHint);
 
   const quota = document.createElement("div");
   quota.className = "quota-cell";
-  const quotaHeading = document.createElement("div");
   const quotaLabel = document.createElement("span");
-  quotaLabel.id = provider.id === "glm" ? "" : `${provider.id}-quota-label`;
-  quotaLabel.textContent = provider.id === "glm" ? "5 小时窗口" : "在线口径";
+  quotaLabel.id = isGlm ? "" : `${instanceId}-quota-label`;
+  quotaLabel.textContent = isGlm ? "窗口" : "在线口径";
   const quotaValue = document.createElement("b");
-  quotaValue.id = provider.id === "glm" ? "glm-percent" : `${provider.id}-quota-value`;
+  quotaValue.id = isGlm ? `${instanceId}-percent` : `${instanceId}-quota-value`;
   quotaValue.textContent = "—";
-  quotaHeading.append(quotaLabel, quotaValue);
   const progress = document.createElement("progress");
-  progress.id = provider.id === "glm" ? "glm-progress" : `${provider.id}-progress`;
+  progress.id = `${instanceId}-progress`;
   progress.max = 100;
   progress.value = 0;
   const quotaHint = document.createElement("small");
-  quotaHint.id = provider.id === "glm" ? "glm-cooldown" : `${provider.id}-quota-hint`;
-  quotaHint.textContent = provider.id === "glm" ? "重置时间未知" : "等待在线返回";
-  quota.append(quotaHeading, progress, quotaHint);
+  quotaHint.id = isGlm ? `${instanceId}-cooldown` : `${instanceId}-quota-hint`;
+  quotaHint.textContent = isGlm ? "重置时间未知" : "等待在线返回";
+  quota.append(quotaLabel, quotaValue, progress, quotaHint);
 
   const configure = document.createElement("button");
   configure.className = "row-action";
   configure.type = "button";
   configure.dataset.action = "configure";
-  configure.dataset.provider = provider.id;
+  configure.dataset.provider = instanceId;
   configure.textContent = "修改配置";
 
   const remove = document.createElement("button");
   remove.className = "row-action danger";
   remove.type = "button";
   remove.dataset.action = "delete-provider";
-  remove.dataset.provider = provider.id;
-  remove.setAttribute("aria-label", `删除 ${provider.name}`);
+  remove.dataset.provider = instanceId;
+  remove.setAttribute("aria-label", `删除 ${displayName}`);
   remove.textContent = "删除";
 
   const actions = document.createElement("div");
@@ -213,24 +241,156 @@ function createProviderRow(provider: ProviderDefinition): HTMLElement {
 
   const details = document.createElement("div");
   details.className = "provider-details";
-  details.id = `${provider.id}-details`;
-  details.setAttribute("aria-label", `${provider.name}完整明细`);
+  details.id = `${instanceId}-details`;
+  details.setAttribute("aria-label", `${displayName}完整明细`);
   details.hidden = true;
-  row.append(identity, usage, quota, actions, details);
+  row.append(handle, identity, usage, quota, actions, details);
   return row;
 }
 
-function setProviderConfigured(providerId: string) {
-  configuredProviderIds.add(providerId);
+/** Wires drag-to-reorder plus an Alt+arrow keyboard equivalent onto a row. */
+function attachRowDragging(row: HTMLElement, handle: HTMLElement) {
+  const releaseDraggable = () => {
+    row.draggable = false;
+  };
+  handle.addEventListener("mousedown", () => {
+    row.draggable = true;
+  });
+  // A plain click on the grip must not leave the whole row draggable.
+  handle.addEventListener("mouseup", releaseDraggable);
+  handle.addEventListener("pointercancel", releaseDraggable);
+  row.addEventListener("dragstart", (event) => {
+    if (!row.draggable) {
+      event.preventDefault();
+      return;
+    }
+    dragSourceRow = row;
+    row.classList.add("dragging");
+    event.dataTransfer?.setData("text/plain", row.dataset.provider ?? "");
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  });
+  row.addEventListener("dragend", () => {
+    row.draggable = false;
+    row.classList.remove("dragging");
+    clearDropIndicators();
+    if (dragSourceRow === row) persistInstanceOrder();
+    dragSourceRow = null;
+  });
+  row.addEventListener("dragover", (event) => {
+    if (!dragSourceRow || dragSourceRow === row) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const after = dropIsAfter(row, event);
+    row.classList.toggle("drop-after", after);
+    row.classList.toggle("drop-before", !after);
+  });
+  row.addEventListener("dragleave", () => {
+    row.classList.remove("drop-before", "drop-after");
+  });
+  row.addEventListener("drop", (event) => {
+    if (!dragSourceRow || dragSourceRow === row) return;
+    event.preventDefault();
+    if (dropIsAfter(row, event)) row.after(dragSourceRow);
+    else row.before(dragSourceRow);
+    clearDropIndicators();
+    persistInstanceOrder();
+  });
+  handle.addEventListener("keydown", (event) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const up = event.key === "ArrowUp";
+    const sibling = up ? row.previousElementSibling : row.nextElementSibling;
+    if (!(sibling instanceof HTMLElement)) return;
+    if (up) sibling.before(row);
+    else sibling.after(row);
+    persistInstanceOrder();
+    (handle as HTMLElement).focus();
+  });
+}
+
+function dropIsAfter(row: HTMLElement, event: DragEvent): boolean {
+  const rect = row.getBoundingClientRect();
+  return event.clientY > rect.top + rect.height / 2;
+}
+
+function clearDropIndicators() {
+  for (const row of document.querySelectorAll<HTMLElement>(".provider-row")) {
+    row.classList.remove("drop-before", "drop-after");
+  }
+}
+
+function loadSavedInstanceOrder(): string[] {
+  try {
+    const raw = window.localStorage.getItem(PROVIDER_ORDER_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string" && id.length <= 64)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistInstanceOrder() {
+  const order = rowInstanceIds();
+  savedInstanceOrder.splice(0, savedInstanceOrder.length, ...order);
+  try {
+    window.localStorage.setItem(PROVIDER_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // Ordering is a convenience; ignore storage failures.
+  }
+}
+
+function rowInstanceIds(): string[] {
+  return Array.from(
+    providerList?.querySelectorAll<HTMLElement>(".provider-row") ?? [],
+    (row) => row.dataset.provider ?? "",
+  ).filter(Boolean);
+}
+
+/** Sort key honoring the saved drag order, then catalog order as fallback. */
+function instanceOrderKey(instanceId: string): [number, number, number] {
+  const saved = savedInstanceOrder.indexOf(instanceId);
+  const catalog = providerDefinitions.findIndex(
+    (provider) => provider.id === baseProviderId(instanceId),
+  );
+  return saved === -1
+    ? [1, catalog, instanceIndexOf(instanceId)]
+    : [0, saved, instanceIndexOf(instanceId)];
+}
+
+function sortProviderRows() {
+  const rows = Array.from(providerList?.querySelectorAll<HTMLElement>(".provider-row") ?? []);
+  rows.sort((left, right) => {
+    const leftKey = instanceOrderKey(left.dataset.provider ?? "");
+    const rightKey = instanceOrderKey(right.dataset.provider ?? "");
+    return (
+      leftKey[0] - rightKey[0] || leftKey[1] - rightKey[1] || leftKey[2] - rightKey[2]
+    );
+  });
+  for (const row of rows) providerList?.append(row);
+}
+
+function instanceDisplayName(provider: ProviderDefinition, index: number): string {
+  return index >= 2 ? `${provider.name} · 实例 ${index}` : provider.name;
+}
+
+function setInstanceConfigured(instanceId: string) {
+  configuredInstanceIds.add(instanceId);
   renderProviderVisibility();
 }
 
+function configuredBaseIds(): Set<string> {
+  return new Set(Array.from(configuredInstanceIds, baseProviderId));
+}
+
 function renderProviderVisibility() {
-  for (const provider of providerDefinitions) {
-    const row = document.querySelector<HTMLElement>(`.provider-row[data-provider="${provider.id}"]`);
-    if (row) row.hidden = !configuredProviderIds.has(provider.id);
+  for (const instanceId of configuredInstanceIds) ensureProviderRow(instanceId);
+  sortProviderRows();
+  for (const row of providerList?.querySelectorAll<HTMLElement>(".provider-row") ?? []) {
+    row.hidden = !configuredInstanceIds.has(row.dataset.provider ?? "");
   }
-  if (providerEmpty) providerEmpty.hidden = configuredProviderIds.size > 0;
+  if (providerEmpty) providerEmpty.hidden = configuredInstanceIds.size > 0;
   renderProviderCatalog();
   renderTrendProviderOptions();
   renderTotals();
@@ -239,20 +399,14 @@ function renderProviderVisibility() {
 function renderProviderCatalog() {
   if (!providerCatalog) return;
   providerCatalog.replaceChildren();
-  const available = unconfiguredProviders(configuredProviderIds);
-  if (!available.length) {
-    const complete = document.createElement("p");
-    complete.className = "catalog-complete";
-    complete.textContent = "全部供应商都已配置。";
-    providerCatalog.append(complete);
-    return;
-  }
-  for (const provider of available) {
+  for (const provider of providerDefinitions) {
+    const configured = hasConfiguredInstance(provider.id, configuredInstanceIds);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "catalog-item";
     button.dataset.action = "configure";
     button.dataset.provider = provider.id;
+    button.dataset.mode = "add";
     const mark = document.createElement("img");
     mark.className = "catalog-mark";
     mark.src = provider.logo;
@@ -260,7 +414,7 @@ function renderProviderCatalog() {
     const name = document.createElement("strong");
     name.textContent = provider.name;
     const subtitle = document.createElement("span");
-    subtitle.textContent = provider.subtitle;
+    subtitle.textContent = configured ? `${provider.subtitle} · 已配置，可添加实例` : provider.subtitle;
     const copy = document.createElement("span");
     copy.className = "catalog-copy";
     copy.append(name, subtitle);
@@ -320,26 +474,22 @@ async function populateAboutMetadata() {
   setText("about-provider-count", String(providerDefinitions.length));
 }
 
-function renderGlm(snapshot: GlmSnapshot) {
-  setProviderConfigured("glm");
-  glmSnapshot = snapshot;
-  glmResetAt = snapshot.cooldownEndsAtMs;
-  const tokens = byId<HTMLElement>("glm-tokens");
-  const requests = byId<HTMLElement>("glm-requests");
-  const percent = byId<HTMLElement>("glm-percent");
-  const progress = byId<HTMLProgressElement>("glm-progress");
-  if (tokens) tokens.textContent = formatInteger(snapshot.totalTokens);
-  if (requests) requests.textContent = `${formatInteger(snapshot.requests)} 次调用 · ${snapshot.planLevel}`;
-  if (percent) percent.textContent = `${snapshot.usedPercent.toFixed(1)}%`;
+function renderGlm(instanceId: string, snapshot: GlmSnapshot) {
+  setInstanceConfigured(instanceId);
+  glmSnapshots.set(instanceId, snapshot);
+  setText(`${instanceId}-tokens`, formatInteger(snapshot.totalTokens));
+  setText(`${instanceId}-requests`, `${formatInteger(snapshot.requests)} 次调用 · ${snapshot.planLevel}`);
+  setText(`${instanceId}-percent`, `${snapshot.usedPercent.toFixed(1)}%`);
+  const progress = byId<HTMLProgressElement>(`${instanceId}-progress`);
   if (progress) progress.value = snapshot.usedPercent;
-  renderProviderDetails("glm", snapshot.detailSections);
+  renderProviderDetails(instanceId, snapshot.detailSections);
   updateCooldown();
   renderTotals();
   setStatus("刚刚完成在线同步");
 }
 
 function renderOnline(snapshot: OnlineSnapshot) {
-  setProviderConfigured(snapshot.providerId);
+  setInstanceConfigured(snapshot.providerId);
   onlineSnapshots.set(snapshot.providerId, snapshot);
   const primary = byId<HTMLElement>(`${snapshot.providerId}-primary`);
   const secondary = byId<HTMLElement>(`${snapshot.providerId}-secondary`);
@@ -373,6 +523,8 @@ function sourceLabel(snapshot: OnlineSnapshot) {
   if (snapshot.source === "official_balance") return "官方余额接口";
   if (snapshot.source === "official_organization_usage") return "OpenAI 官方组织用量";
   if (snapshot.source === "official_claude_code_analytics") return "Claude Code 官方日汇总";
+  if (snapshot.source === "official_messages_usage") return "Anthropic 官方用量报告";
+  if (snapshot.source === "official_prepaid_balance") return "xAI Management 预付余额";
   if (snapshot.source === "official_cloud_monitoring") return "Google Cloud Monitoring";
   if (snapshot.source === "official_prometheus_monitoring") return "百炼 Prometheus 监控";
   return "在线接口";
@@ -387,7 +539,11 @@ function renderTotals() {
   const balance = snapshots
     .reduce((sum, snapshot) => sum + (snapshot.balanceCny ?? 0), 0);
   const totals = summarizeProviders([
-    ...(glmSnapshot ? [{ requests: glmSnapshot.requests, totalTokens: glmSnapshot.totalTokens, estimatedCostCny: null }] : []),
+    ...Array.from(glmSnapshots.values(), (snapshot) => ({
+      requests: snapshot.requests,
+      totalTokens: snapshot.totalTokens,
+      estimatedCostCny: null,
+    })),
     ...snapshots.map((snapshot) => ({
       requests: snapshot.requests ?? null,
       totalTokens: snapshot.totalTokens ?? null,
@@ -402,22 +558,24 @@ function renderTotals() {
       ? `¥${estimatedCost.toFixed(2)}`
       : balance > 0 ? `¥${balance.toFixed(2)}` : "—";
   }
-  if (coverage) coverage.textContent = `${configuredProviderIds.size} / ${providerDefinitions.length}`;
+  if (coverage) coverage.textContent = `${configuredBaseIds().size} / ${providerDefinitions.length}`;
 }
 
 function updateCooldown() {
-  const cooldown = byId<HTMLElement>("glm-cooldown");
-  if (cooldown && glmResetAt !== null) cooldown.textContent = formatCooldown(glmResetAt);
+  for (const [instanceId, snapshot] of glmSnapshots) {
+    setText(`${instanceId}-cooldown`, formatCooldown(snapshot.cooldownEndsAtMs));
+  }
 }
 
-async function syncGlm() {
+async function syncGlm(instanceId: string) {
   if (!isTauri()) {
     setStatus("浏览器预览模式");
     return;
   }
-  setStatus("正在连接 GLM", "syncing");
+  setStatus(`正在连接 ${providerName(instanceId)}`, "syncing");
   try {
-    renderGlm(await invoke<GlmSnapshot>("sync_glm", {
+    renderGlm(instanceId, await invoke<GlmSnapshot>("sync_glm", {
+      providerId: instanceId,
       localDate: localDateKey(),
       slot: localQuarterSlot(),
       ...localDayRange(),
@@ -428,35 +586,46 @@ async function syncGlm() {
   }
 }
 
-async function syncOnline(providerId: string) {
+async function syncOnline(instanceId: string) {
   if (!isTauri()) return;
   try {
     renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", {
-      providerId,
+      providerId: instanceId,
       localDate: localDateKey(),
       slot: localQuarterSlot(),
       ...localDayRangeMs(),
     }));
   } catch (reason) {
     const error = reason as CommandError;
-    setStatus(`${providerName(providerId)}：${error.message ?? "同步失败"}`, "error");
+    setStatus(`${providerName(instanceId)}：${error.message ?? "同步失败"}`, "error");
   }
+}
+
+function orderedConfiguredInstances(): string[] {
+  // Sync in the visual (drag-ordered) sequence when rows exist.
+  const visualOrder = rowInstanceIds().filter((instanceId) =>
+    configuredInstanceIds.has(instanceId),
+  );
+  if (visualOrder.length === configuredInstanceIds.size) return visualOrder;
+  return Array.from(configuredInstanceIds).sort((left, right) => {
+    const leftKey = instanceOrderKey(left);
+    const rightKey = instanceOrderKey(right);
+    return (
+      leftKey[0] - rightKey[0] || leftKey[1] - rightKey[1] || leftKey[2] - rightKey[2]
+    );
+  });
 }
 
 async function syncAll() {
   if (isSyncing) return;
-  if (!configuredProviderIds.size) {
+  if (!configuredInstanceIds.size) {
     setStatus("请先添加供应商");
     return;
   }
   isSyncing = true;
   try {
-    const syncTasks: Promise<unknown>[] = [];
-    if (configuredProviderIds.has("glm")) syncTasks.push(syncGlm());
-    syncTasks.push(
-      ...providerDefinitions
-        .filter((item) => item.id !== "glm" && configuredProviderIds.has(item.id))
-        .map((provider) => syncOnline(provider.id)),
+    const syncTasks = orderedConfiguredInstances().map((instanceId) =>
+      baseProviderId(instanceId) === "glm" ? syncGlm(instanceId) : syncOnline(instanceId),
     );
     await Promise.all(syncTasks);
     renderTotals();
@@ -466,35 +635,34 @@ async function syncAll() {
   }
 }
 
-function providerName(providerId: string) {
-  return providerDefinition(providerId)?.name ?? "供应商";
+function providerName(instanceId: string) {
+  const provider = providerDefinition(instanceId);
+  if (!provider) return "供应商";
+  return instanceDisplayName(provider, instanceIndexOf(instanceId));
 }
 
-function deleteProvider(providerId: string) {
-  const provider = providerDefinition(providerId);
-  if (!provider || !isTauri()) return;
-  pendingDeleteProvider = providerId;
+function deleteProviderInstance(instanceId: string) {
+  if (!providerDefinition(instanceId) || !isTauri()) return;
+  pendingDeleteInstance = instanceId;
   if (confirmMessage) {
-    confirmMessage.textContent = `删除「${provider.name}」会清除本机保存的 API Key 与缓存摘要，但不影响已保存的历史趋势。确定继续吗？`;
+    confirmMessage.textContent = `删除「${providerName(instanceId)}」会清除本机保存的 API Key 与缓存摘要，但不影响已保存的历史趋势。确定继续吗？`;
   }
   confirmDialog?.showModal();
 }
 
-async function loadConfiguredProviders() {
+async function loadProviderInstances() {
   if (!isTauri()) {
     renderProviderVisibility();
     return;
   }
-  const configured = await Promise.all(providerDefinitions.map(async (provider) => {
-    const command = provider.id === "glm" ? "has_glm_credential" : "has_online_credential";
-    const args = provider.id === "glm" ? undefined : { providerId: provider.id };
-    try {
-      return [provider.id, await invoke<boolean>(command, args)] as const;
-    } catch {
-      return [provider.id, false] as const;
+  try {
+    const instances = await invoke<string[]>("list_provider_instances");
+    for (const instanceId of instances) {
+      if (providerDefinition(instanceId)) configuredInstanceIds.add(instanceId);
     }
-  }));
-  for (const [providerId, exists] of configured) if (exists) configuredProviderIds.add(providerId);
+  } catch {
+    // Leave the dashboard empty when credentials cannot be listed.
+  }
   renderProviderVisibility();
 }
 
@@ -503,8 +671,8 @@ async function loadCache() {
   try {
     const cached = await invoke<CachedSnapshot[]>("load_cached_snapshots");
     for (const entry of cached) {
-      if (!configuredProviderIds.has(entry.providerId)) continue;
-      if (entry.kind === "glm") renderGlm(entry.snapshot as GlmSnapshot);
+      if (!configuredInstanceIds.has(entry.providerId)) continue;
+      if (entry.kind === "glm") renderGlm(entry.providerId, entry.snapshot as GlmSnapshot);
       if (entry.kind === "online") renderOnline(entry.snapshot as OnlineSnapshot);
     }
     if (cached.length > 0) setStatus("已载入本地缓存，正在刷新");
@@ -562,11 +730,15 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (button.dataset.action === "configure") {
-    openProviderDialog(button.dataset.provider ?? "glm");
+    const target = button.dataset.provider ?? "glm";
+    const instanceId = button.dataset.mode === "add" || !configuredInstanceIds.has(target)
+      ? nextInstanceId(baseProviderId(target), configuredInstanceIds)
+      : target;
+    openProviderDialog(instanceId);
     return;
   }
   if (button.dataset.action === "delete-provider") {
-    deleteProvider(button.dataset.provider ?? "");
+    deleteProviderInstance(button.dataset.provider ?? "");
     return;
   }
   if (button.dataset.action === "close-confirm-dialog") {
@@ -574,12 +746,14 @@ document.addEventListener("click", (event) => {
   }
 });
 
-function openProviderDialog(providerId: string) {
-  const provider = providerDefinition(providerId);
+function openProviderDialog(instanceId: string) {
+  const provider = providerDefinition(instanceId);
   if (!provider || !credentialFields) return;
-  selectedProvider = provider.id;
+  selectedInstance = instanceId;
   catalogDialog?.close();
-  if (dialogTitle) dialogTitle.textContent = `配置 ${provider.name}`;
+  if (dialogTitle) {
+    dialogTitle.textContent = `配置 ${instanceDisplayName(provider, instanceIndexOf(instanceId))}`;
+  }
   if (dialogCopy) dialogCopy.textContent = provider.credentialHint;
   credentialFields.replaceChildren(...provider.fields.map((field) => {
     const wrapper = document.createElement("div");
@@ -617,18 +791,19 @@ providerForm?.addEventListener("submit", async (event) => {
     const values = Object.fromEntries(
       Array.from(credentialFields.querySelectorAll<HTMLInputElement>("input")).map((input) => [input.name, input.value]),
     );
-    const credential = serializeProviderCredential(selectedProvider, values);
-    if (selectedProvider === "glm") {
+    const credential = serializeProviderCredential(selectedInstance, values);
+    if (baseProviderId(selectedInstance) === "glm") {
       const snapshot = await invoke<GlmSnapshot>("configure_glm", {
+        providerId: selectedInstance,
         apiKey: credential,
         localDate: localDateKey(),
         slot: localQuarterSlot(),
         ...localDayRange(),
       });
-      renderGlm(snapshot);
+      renderGlm(selectedInstance, snapshot);
     } else {
       const snapshot = await invoke<OnlineSnapshot>("configure_online_provider", {
-        providerId: selectedProvider,
+        providerId: selectedInstance,
         apiKey: credential,
         localDate: localDateKey(),
         slot: localQuarterSlot(),
@@ -637,7 +812,6 @@ providerForm?.addEventListener("submit", async (event) => {
       renderOnline(snapshot);
       setStatus(`${snapshot.label} 已完成在线同步`);
     }
-    setProviderConfigured(selectedProvider);
     await loadDailyUsage();
     dialog?.close();
   } catch (reason) {
@@ -655,27 +829,30 @@ dialog?.addEventListener("close", () => credentialFields?.replaceChildren());
 
 confirmForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const providerId = pendingDeleteProvider;
-  if (!providerId || !confirmAccept) {
+  const instanceId = pendingDeleteInstance;
+  if (!instanceId || !confirmAccept) {
     confirmDialog?.close();
     return;
   }
   confirmAccept.disabled = true;
   confirmAccept.textContent = "删除中…";
   try {
-    await invoke("delete_provider", { providerId });
-    configuredProviderIds.delete(providerId);
-    onlineSnapshots.delete(providerId);
-    if (providerId === "glm") glmSnapshot = null;
+    await invoke("delete_provider", { providerId: instanceId });
+    configuredInstanceIds.delete(instanceId);
+    onlineSnapshots.delete(instanceId);
+    glmSnapshots.delete(instanceId);
+    providerList
+      ?.querySelector<HTMLElement>(`.provider-row[data-provider="${instanceId}"]`)
+      ?.remove();
     renderProviderVisibility();
     renderTotals();
     await loadDailyUsage();
-    setStatus(`已删除 ${providerName(providerId)}`);
+    setStatus(`已删除 ${providerName(instanceId)}`);
   } catch (reason) {
     const error = reason as CommandError;
-    setStatus(`${providerName(providerId)}：${error.message ?? "删除失败"}`, "error");
+    setStatus(`${providerName(instanceId)}：${error.message ?? "删除失败"}`, "error");
   } finally {
-    pendingDeleteProvider = null;
+    pendingDeleteInstance = null;
     confirmDialog?.close();
     confirmAccept.disabled = false;
     confirmAccept.textContent = "删除";
@@ -683,7 +860,7 @@ confirmForm?.addEventListener("submit", async (event) => {
 });
 
 confirmDialog?.addEventListener("close", () => {
-  pendingDeleteProvider = null;
+  pendingDeleteInstance = null;
   if (confirmAccept) {
     confirmAccept.disabled = false;
     confirmAccept.textContent = "删除";
@@ -704,13 +881,12 @@ void initializeWindowControls();
 if (isTauri()) void listen("tray-sync", () => void syncAll());
 window.addEventListener("hashchange", applyRoute);
 applyRoute();
-initializeProviderRows();
 void populateAboutMetadata();
 void (async () => {
   const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");
   if (autoSyncInterval && Number.isFinite(savedAutoSync)) autoSyncInterval.value = String(savedAutoSync);
   applyAutoSync(Number.isFinite(savedAutoSync) ? savedAutoSync : 0);
-  await loadConfiguredProviders();
+  await loadProviderInstances();
   await loadCache();
   await loadDailyUsage();
   await syncAll();
