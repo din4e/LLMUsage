@@ -1,6 +1,6 @@
 # Provider Capability Matrix
 
-Last verified: 2026-07-11
+Last verified: 2026-08-16
 
 This matrix is the implementation contract for online provider adapters. A provider is only marked as supporting a capability when a public, official API documents it. Console-only data is not treated as an API, and private browser endpoints or login cookies are out of scope.
 
@@ -27,6 +27,14 @@ This matrix is the implementation contract for online provider adapters. A provi
 | Volcengine Ark / Doubao China | Official billing API | Official `GetInferenceUsage` API | API/response-derived where available | Official billing API | First-class online usage and billing adapter |
 | OpenAI / Codex API | Not applicable | Official Organization Usage API with Admin key | API tier limits are separate; personal ChatGPT plan remaining quota is not exposed | Official Organization Costs API in USD | Admin-key adapter; label as API organization data, not ChatGPT subscription quota |
 | Claude Code | Not applicable | Official Claude Code Analytics API with Admin key | Subscription remaining quota is not returned | Estimated cost by model in USD cents | Daily UTC analytics adapter; aggregate without exposing actor email |
+| Anthropic Messages API | Not applicable | Official `usage_report/messages` API with Admin key | Not returned | Not returned (token counts only) | Daily per-model token adapter (input / cache read / cache write / output); no request count field |
+| xAI / Grok Global | Official Management API: `prepaid/balance` (management key + team id) | Balance change history (`changes[]`) attributes daily spend when timestamps parse | Not returned | Balance and spend in USD cents | Management-key balance adapter; inference keys cannot query billing |
+| PPIO 派欧云 China | Official Management API: billing balance detail (Bearer API key) | Console only | Not returned | Not returned | Balance adapter; amounts arrive as strings in 1/10,000 CNY |
+| Mistral Global | Console only (billing page); no API-key endpoint | Console only | Not returned | Console only | Do not implement; community tools rely on browser cookies, which are out of scope |
+| Groq Global | Not applicable (rate-limit based) | Response-derived rate-limit headers; usage dashboard is console only | Response-derived | Console only | Do not implement balance; optional observer only |
+| Together AI Global | Console only (credits page) | Console only | Not returned | Console only | Do not implement; no documented programmatic credits endpoint |
+| Cerebras Global | Console only (Overview tab) | Metrics API is limited to dedicated-endpoint customers | Response-derived | Console only | Do not implement for standard API keys |
+| Z.AI / GLM Coding Plan Global | Console only | Community discussions only; no verified API-key usage endpoint | Console FAQ documents 5-hour refresh | Included in subscription | Not added; the China community endpoint is not verified for z.ai keys |
 | Gemini Code Assist | Not applicable | Official Cloud Monitoring metrics for API calls and used tokens | Published fixed quota; remaining personal quota is not returned | Not returned by monitoring metrics | Project + explicit OAuth access-token adapter; never read local Google credentials |
 | Alibaba Model Studio / Qwen China & Global | Not applicable | Official private Prometheus metrics `model_usage` and `model_call_count` | Coding Plan remaining quota remains console-only | Billing is separate from monitoring | Prometheus URL + least-privilege AccessKey adapter; Coding Plan keys are rejected |
 
@@ -104,6 +112,30 @@ These endpoints are not currently documented in GLM's public official API refere
 5. On 404/schema drift, disable only online monitoring and retain response-derived/local data.
 6. Identify the source in the UI as “兼容接口（非官方承诺）”.
 
+### Anthropic Messages Usage Report
+
+- Endpoint: `GET https://api.anthropic.com/v1/organizations/usage_report/messages`.
+- Authentication: Admin API key via `x-api-key` plus `anthropic-version: 2023-06-01`.
+- Query parameters used: `starting_at`, `ending_at` (RFC 3339), `bucket_width=1d`, `group_by[]=model`, `limit=31`.
+- Token fields per result row: `uncached_input_tokens`, `cache_read_input_tokens`, `cache_creation.ephemeral_5m_input_tokens` + `ephemeral_1h_input_tokens`, and `output_tokens`.
+- The report exposes no request count and no cost; the adapter therefore reports token totals only and leaves requests and cost empty.
+- Buckets are UTC day boundaries; empty buckets are included with empty `results`.
+
+### xAI Management Billing
+
+- Endpoint: `GET https://management-api.x.ai/v1/billing/teams/{team_id}/prepaid/balance`.
+- Authentication: management key (console → Settings → Management Keys) as a Bearer token; inference keys (`xai-…`) are rejected.
+- Money is reported as USD cents in string form inside `amount.val` / `total.val`.
+- `changes[]` entries carry `changeOrigin` (`PURCHASE`, `REFUND`, and `AUTO_PURCHASE` negative; `SPEND` positive) and `createTs` timestamps. Daily spend is the sum of in-range `SPEND` entries with parseable timestamps; unparseable stamps are skipped rather than guessed.
+- Team ids are restricted to alphanumeric and hyphen before being placed in the URL path.
+
+### PPIO Billing Balance Detail
+
+- Endpoint: `GET https://api.ppio.com/openapi/v1/billing/balance/detail`.
+- Authentication: standard Bearer API key from the PPIO open platform.
+- Response fields `availableBalance`, `cashBalance`, and `creditLimit` arrive as strings in units of 1/10,000 CNY and are converted to yuan at the Rust boundary.
+- Usage and per-key breakdowns remain console-only per the official FAQ.
+
 ## Plan Semantics Verified
 
 ### GLM Coding Plan
@@ -162,6 +194,11 @@ These endpoints are not currently documented in GLM's public official API refere
 - Alibaba Model Studio billing guide: https://help.aliyun.com/zh/model-studio/bill-query-and-cost-management
 - OpenAI Usage API: https://platform.openai.com/docs/api-reference/usage
 - Anthropic Claude Code Analytics API: https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api
+- Anthropic Messages Usage Report API: https://platform.claude.com/docs/en/api/admin/usage_report
+- xAI Management API guide: https://docs.x.ai/developers/management-api-guide
+- xAI Management billing reference: https://docs.x.ai/developers/rest-api-reference/management/billing
+- PPIO billing balance detail: https://ppio.com/docs/management/reference-billing-get-balance-detail
+- PPIO FAQ (per-key usage not supported): https://ppio.com/docs/support/faq
 - Gemini Code Assist monitoring: https://cloud.google.com/gemini/docs/codeassist/monitor-gemini-code-assist
 - Alibaba Model Studio Prometheus monitoring: https://www.alibabacloud.com/help/en/model-studio/model-telemetry
 - USD/CNY estimate source: https://frankfurter.dev/

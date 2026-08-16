@@ -13,7 +13,7 @@
 
 ## v0.1.4 有什么新变化
 
-v0.1.4 新增「删除供应商」功能：每个供应商行新增「删除」按钮，二次确认后清除本机保存的 API Key 与缓存摘要（不影响历史趋势），便于轮换密钥或清理失效凭据；同时修正 macOS 上钥匙串读取失败时误显示「Windows 凭据管理器」的提示，改为按平台给出正确指引。
+v0.1.4 支持同一供应商配置多个实例：在供应商目录中可为已配置的供应商继续「添加实例」（例如两个 GLM 或 Kimi 账号 Key），每个实例独立保存凭据、快照缓存与每日汇总，主列表各自成行并显示实例徽标，可分别测试连接、同步与删除。新增「删除供应商」功能：二次确认后清除本机保存的 API Key 与缓存摘要（不影响历史趋势）；同时修正 macOS 上钥匙串读取失败时的平台化错误提示。新增三家供应商：Anthropic API（官方 Messages 用量报告）、xAI / Grok（Management API 预付余额与今日消耗）、PPIO 派欧云（官方人民币余额）。
 
 > v0.1.3 将用量历史采样细化到 15 分钟粒度，新增「今日」趋势视图；供应商改为并行同步；超过 30 天的明细自动按天汇总。
 
@@ -24,7 +24,7 @@ v0.1.4 新增「删除供应商」功能：每个供应商行新增「删除」�
 | v0.1.0 | 供应商在线用量、额度、余额、完整明细和凭据配置；尚未展示跨供应商汇总趋势 |
 | v0.1.1 | 增加今日请求/Token/成本汇总、每日 Token 趋势、最近 7 日/30 日/全部范围、提供商筛选，以及系统托盘工作流 |
 | v0.1.2 | 新增「关于」页面（版本、标识、技术栈、隐私与安全说明）；修正 GLM 等仅暴露重置时间点的供应商剩余时间显示 |
-| v0.1.4 | 新增「删除供应商」功能（清除密钥与缓存摘要）；修正 macOS 钥匙串读取失败的错误提示 |
+| v0.1.4 | 同一供应商多实例（独立凭据/快照/日汇总与实例徽标）；「删除供应商」功能；新增 Anthropic API、xAI / Grok、PPIO 派欧云三家供应商 |
 | v0.1.3 | 用量历史采样细化到 15 分钟粒度，新增「今日」趋势视图；供应商并行同步；超过 30 天的明细自动按天汇总 |
 
 ### 每日趋势
@@ -51,6 +51,7 @@ v0.1.4 新增「删除供应商」功能：每个供应商行新增「删除」�
 ## 核心能力
 
 - **跨供应商总览**：汇总今日请求数、Token、人民币成本估算和已配置供应商覆盖率。
+- **多实例账号**：同一供应商可添加多个实例（例如两个 GLM 或 Kimi 账号 Key），各自独立保存凭据、快照与每日汇总，可分别测试连接并持续查看每个实例的 Token 用量。
 - **每日消耗趋势**：原生 SVG 图表，不引入大型图表运行时，数据点支持键盘聚焦和辅助技术说明。
 - **在线数据优先**：优先使用供应商官方用量、Analytics、Monitoring 或余额接口。
 - **完整额度明细**：多模型、多窗口和多资源额度不会只保留第一项，明细默认折叠。
@@ -74,8 +75,11 @@ v0.1.4 新增「删除供应商」功能：每个供应商行新增「删除」�
 | OpenRouter | 国际 | 官方 Credits 接口 | 已购额度减去用量后的美元余额 |
 | OpenAI / Codex API | 国际 | Organization Usage 与 Costs API | 请求、输入/输出 Token、模型明细、美元成本及人民币估算 |
 | Claude Code | 国际 | Claude Code Analytics API | UTC 日汇总会话、Token、模型成本和开发活动 |
+| Anthropic API | 国际 | 官方 Messages 用量报告（Admin API） | 按模型的输入、缓存与输出 Token 日用量 |
 | Gemini Code Assist | 国际 | Google Cloud Monitoring | API 调用数和已用 Token |
 | Qwen / Model Studio | 中国 / 国际 | 官方私有 Prometheus 监控 | 各模型调用数和 Token 消耗 |
+| xAI / Grok | 国际 | Management API 预付余额 | 美元预付余额、今日消耗与余额变动记录 |
+| PPIO 派欧云 | 中国 | 官方余额接口 | 人民币可用余额、现金余额与信用额度 |
 
 不同产品的统计能力并不相同，界面会标注数据来源与口径。完整能力矩阵见 [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)。
 
@@ -127,6 +131,8 @@ src-tauri/target/release/bundle/nsis/
 
 - OpenAI 展示 API 组织数据，需要 Organization Admin API Key；不等同于个人 ChatGPT/Codex 订阅额度。
 - Claude Code 需要 Anthropic Admin API Key；个人 Pro/Max 订阅没有公开的剩余额度 API。
+- Anthropic API 与 Claude Code 使用同一类 Admin API Key，但口径不同：前者按模型统计 Messages API 的 Token 用量，后者是 Claude Code 的日汇总与开发活动；两者可分别配置。
+- xAI 需要控制台生成的 Management Key 与团队 ID；推理用 API Key 无法查询预付余额。
 - Gemini 需要 Google Cloud Project ID、Monitoring Viewer 权限和用户主动提供的 OAuth Access Token；应用不会读取 gcloud 或浏览器凭据。
 - Qwen 使用高级监控的 Prometheus HTTP API 与最小权限 AccessKey；不使用 Coding Plan Key 自动查询。
 - Kimi Code Key、Moonshot 开放平台 Key，以及 MiniMax 国内/国际 Key 属于不同产品或区域，会按密钥类型匹配端点。
