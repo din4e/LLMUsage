@@ -17,9 +17,12 @@ pub enum OnlineProvider {
     OpenRouter,
     OpenAiCodex,
     ClaudeCode,
+    AnthropicApi,
     Gemini,
     QwenCn,
     QwenGlobal,
+    Xai,
+    Ppio,
 }
 
 impl OnlineProvider {
@@ -35,9 +38,12 @@ impl OnlineProvider {
             "openrouter" => Some(Self::OpenRouter),
             "openai_codex" => Some(Self::OpenAiCodex),
             "claude_code" => Some(Self::ClaudeCode),
+            "anthropic_api" => Some(Self::AnthropicApi),
             "gemini" => Some(Self::Gemini),
             "qwen_cn" => Some(Self::QwenCn),
             "qwen_global" => Some(Self::QwenGlobal),
+            "xai" => Some(Self::Xai),
+            "ppio" => Some(Self::Ppio),
             _ => None,
         }
     }
@@ -54,9 +60,12 @@ impl OnlineProvider {
             Self::OpenRouter => "openrouter",
             Self::OpenAiCodex => "openai_codex",
             Self::ClaudeCode => "claude_code",
+            Self::AnthropicApi => "anthropic_api",
             Self::Gemini => "gemini",
             Self::QwenCn => "qwen_cn",
             Self::QwenGlobal => "qwen_global",
+            Self::Xai => "xai",
+            Self::Ppio => "ppio",
         }
     }
 
@@ -72,9 +81,12 @@ impl OnlineProvider {
             Self::OpenRouter => "OpenRouter",
             Self::OpenAiCodex => "OpenAI / Codex API",
             Self::ClaudeCode => "Claude Code",
+            Self::AnthropicApi => "Anthropic API",
             Self::Gemini => "Gemini Code Assist",
             Self::QwenCn => "Qwen / 百炼国内",
             Self::QwenGlobal => "Qwen / Model Studio Global",
+            Self::Xai => "xAI / Grok",
+            Self::Ppio => "PPIO 派欧云",
         }
     }
 
@@ -104,7 +116,11 @@ impl OnlineProvider {
             Self::ClaudeCode => {
                 &["https://api.anthropic.com/v1/organizations/usage_report/claude_code"]
             }
-            Self::Gemini | Self::QwenCn | Self::QwenGlobal => &[],
+            Self::AnthropicApi => {
+                &["https://api.anthropic.com/v1/organizations/usage_report/messages"]
+            }
+            Self::Ppio => &["https://api.ppio.com/openapi/v1/billing/balance/detail"],
+            Self::Gemini | Self::QwenCn | Self::QwenGlobal | Self::Xai => &[],
         }
     }
 
@@ -118,14 +134,69 @@ impl OnlineProvider {
             Self::MiniMaxCn | Self::MiniMaxGlobal => "experimental_token_plan",
             Self::OpenAiCodex => "official_organization_usage",
             Self::ClaudeCode => "official_claude_code_analytics",
+            Self::AnthropicApi => "official_messages_usage",
             Self::Gemini => "official_cloud_monitoring",
             Self::QwenCn | Self::QwenGlobal => "official_prometheus_monitoring",
+            Self::Xai => "official_prepaid_balance",
+            Self::Ppio => "official_balance",
         }
     }
 
     fn experimental(self) -> bool {
         matches!(self, Self::KimiCn | Self::MiniMaxCn | Self::MiniMaxGlobal)
     }
+
+    /// Parses `kimi_cn` (instance 1) or `kimi_cn_2` (instance 2 and up) into a
+    /// validated instance whose id is safe for the credential vault, snapshot
+    /// cache, and daily history file names.
+    pub fn parse_instance(value: &str) -> Option<ProviderInstance> {
+        if let Some(provider) = Self::from_id(value) {
+            return Some(ProviderInstance {
+                provider,
+                id: value.to_string(),
+                index: 1,
+            });
+        }
+        let (base, index) = split_instance_suffix(value)?;
+        let provider = Self::from_id(base)?;
+        Some(ProviderInstance {
+            provider,
+            id: value.to_string(),
+            index,
+        })
+    }
+}
+
+/// A configured provider instance: the base provider plus an optional numeric
+/// suffix (`kimi_cn_2`) that distinguishes multiple accounts of the same
+/// provider. The bare base id is instance 1.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderInstance {
+    pub provider: OnlineProvider,
+    pub id: String,
+    pub index: u32,
+}
+
+/// Splits `kimi_cn_2` into (`kimi_cn`, 2). Returns `None` for bare ids,
+/// suffixes below 2, non-canonical numbers, or characters that are unsafe for
+/// credential, cache, and history file names.
+pub fn split_instance_suffix(value: &str) -> Option<(&str, u32)> {
+    if !is_safe_instance_id(value) {
+        return None;
+    }
+    let (base, suffix) = value.rsplit_once('_')?;
+    if suffix.len() > 1 && suffix.starts_with('0') {
+        return None;
+    }
+    let index = suffix.parse::<u32>().ok()?;
+    (index >= 2).then_some((base, index))
+}
+
+fn is_safe_instance_id(value: &str) -> bool {
+    value.len() <= 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -214,6 +285,7 @@ pub struct OnlineClient {
 enum AnalyticsCredential {
     Gemini { project_id: String },
     Qwen { endpoint: reqwest::Url },
+    Xai { team_id: String },
 }
 
 #[derive(Deserialize)]
@@ -229,6 +301,13 @@ struct QwenCredential {
     endpoint: String,
     access_key_id: String,
     access_key_secret: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct XaiCredential {
+    management_key: String,
+    team_id: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -364,6 +443,34 @@ impl OnlineClient {
                     false,
                 )
             }
+            OnlineProvider::Xai => {
+                let mut credential: XaiCredential =
+                    serde_json::from_str(trimmed).map_err(|_| OnlineError::InvalidCredential)?;
+                if !valid_xai_team_id(&credential.team_id) {
+                    credential.management_key.zeroize();
+                    return Err(OnlineError::InvalidCredential);
+                }
+                if credential.management_key.is_empty() || credential.management_key.len() > 4096 {
+                    credential.management_key.zeroize();
+                    return Err(OnlineError::InvalidCredential);
+                }
+                let authorization = match sensitive_bearer_header(&credential.management_key) {
+                    Ok(header) => header,
+                    Err(error) => {
+                        credential.management_key.zeroize();
+                        return Err(error);
+                    }
+                };
+                credential.management_key.zeroize();
+                (
+                    authorization,
+                    sensitive_header("unused")?,
+                    Some(AnalyticsCredential::Xai {
+                        team_id: credential.team_id,
+                    }),
+                    false,
+                )
+            }
             _ => (
                 sensitive_bearer_header(trimmed)?,
                 sensitive_header(trimmed)?,
@@ -431,10 +538,12 @@ impl OnlineClient {
         match self.provider {
             OnlineProvider::OpenAiCodex => return self.fetch_openai_analytics(range).await,
             OnlineProvider::ClaudeCode => return self.fetch_claude_code_analytics(range).await,
+            OnlineProvider::AnthropicApi => return self.fetch_anthropic_messages(range).await,
             OnlineProvider::Gemini => return self.fetch_gemini_analytics(range).await,
             OnlineProvider::QwenCn | OnlineProvider::QwenGlobal => {
                 return self.fetch_qwen_analytics(range).await;
             }
+            OnlineProvider::Xai => return self.fetch_xai_balance(range).await,
             _ => {}
         }
         let mut last_error = OnlineError::RequestFailed;
@@ -515,6 +624,52 @@ impl OnlineClient {
         let json = self.execute_json(request).await?;
         let rate = self.fetch_usd_cny_rate().await;
         parse_claude_code_analytics(&json, rate)
+    }
+
+    async fn fetch_anthropic_messages(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        let mut url = reqwest::Url::parse(self.provider.endpoints()[0])
+            .map_err(|_| OnlineError::RequestFailed)?;
+        url.query_pairs_mut()
+            .append_pair("starting_at", &rfc3339_millis(range.start_time_ms)?)
+            .append_pair("ending_at", &rfc3339_millis(range.end_time_ms)?)
+            .append_pair("bucket_width", "1d")
+            .append_pair("group_by[]", "model")
+            .append_pair("limit", "31");
+        let request = self
+            .client
+            .get(url)
+            .header("x-api-key", self.api_key.clone())
+            .header("anthropic-version", "2023-06-01")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)?;
+        let json = self.execute_json(request).await?;
+        parse_anthropic_messages(self.provider, &json)
+    }
+
+    async fn fetch_xai_balance(
+        &self,
+        range: OnlineUsageRange,
+    ) -> Result<OnlineSnapshot, OnlineError> {
+        let AnalyticsCredential::Xai { team_id } = self
+            .analytics_credential
+            .as_ref()
+            .ok_or(OnlineError::InvalidCredential)?
+        else {
+            return Err(OnlineError::InvalidCredential);
+        };
+        let mut url = reqwest::Url::parse("https://management-api.x.ai/v1/billing/teams/")
+            .map_err(|_| OnlineError::RequestFailed)?;
+        url.path_segments_mut()
+            .map_err(|_| OnlineError::RequestFailed)?
+            .push(team_id)
+            .push("prepaid")
+            .push("balance");
+        let json = self.fetch_bearer_json(url).await?;
+        parse_xai_balance(self.provider, &json, range)
     }
 
     async fn fetch_gemini_analytics(
@@ -692,6 +847,16 @@ fn valid_google_project_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
+/// xAI team ids appear in the Management API URL path, so only plain
+/// alphanumeric ids with hyphens are accepted.
+fn valid_xai_team_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+}
+
 fn validate_qwen_endpoint(value: &str) -> Result<reqwest::Url, OnlineError> {
     let mut endpoint =
         reqwest::Url::parse(value.trim()).map_err(|_| OnlineError::InvalidCredential)?;
@@ -736,6 +901,9 @@ pub fn parse_snapshot(provider: OnlineProvider, json: &str) -> Result<OnlineSnap
         }
         OnlineProvider::OpenRouter => parse_openrouter(provider, json),
         OnlineProvider::ClaudeCode => parse_claude_code_analytics(json, None),
+        OnlineProvider::AnthropicApi => parse_anthropic_messages(provider, json),
+        OnlineProvider::Xai => parse_xai_balance(provider, json, OnlineUsageRange::current_utc_day()?),
+        OnlineProvider::Ppio => parse_ppio(provider, json),
         OnlineProvider::OpenAiCodex
         | OnlineProvider::Gemini
         | OnlineProvider::QwenCn
@@ -1215,6 +1383,237 @@ fn parse_openrouter(provider: OnlineProvider, json: &str) -> Result<OnlineSnapsh
             response.data.total_credits, response.data.total_usage
         ),
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PpioBalanceResponse {
+    available_balance: String,
+    cash_balance: String,
+    credit_limit: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pending_charges: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    outstanding_invoices: Option<String>,
+}
+
+/// PPIO returns every amount as a string in units of 1/10,000 CNY.
+fn parse_ppio(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, OnlineError> {
+    let response: PpioBalanceResponse =
+        serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    let available = ppio_amount(&response.available_balance)?;
+    let cash = ppio_amount(&response.cash_balance)?;
+    let credit = ppio_amount(&response.credit_limit)?;
+    Ok(balance_snapshot(
+        provider,
+        available,
+        "CNY",
+        format!("现金 ¥{cash:.2} · 信用额度 ¥{credit:.2}"),
+    ))
+}
+
+fn ppio_amount(value: &str) -> Result<f64, OnlineError> {
+    parse_money(value).map(|raw| raw / 10_000.0)
+}
+
+#[derive(Deserialize)]
+struct XaiAmount {
+    val: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct XaiBalanceChange {
+    change_origin: String,
+    amount: XaiAmount,
+    create_ts: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct XaiBalanceResponse {
+    total: XaiAmount,
+    #[serde(default)]
+    changes: Vec<XaiBalanceChange>,
+}
+
+fn parse_xai_balance(
+    provider: OnlineProvider,
+    json: &str,
+    range: OnlineUsageRange,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let response: XaiBalanceResponse =
+        serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    // xAI reports money as USD cents in string form.
+    let balance = xai_cents(&response.total.val)?;
+    let mut spend_today = 0_f64;
+    let mut saw_spend_today = false;
+    for change in &response.changes {
+        if change.change_origin != "SPEND" {
+            continue;
+        }
+        let Ok(amount) = xai_cents(&change.amount.val) else {
+            continue;
+        };
+        let Some(timestamp) = change.create_ts.as_deref().and_then(xai_timestamp_ms) else {
+            continue;
+        };
+        if timestamp >= range.start_time_ms && timestamp < range.end_time_ms {
+            spend_today += amount;
+            saw_spend_today = true;
+        }
+    }
+    let secondary = if saw_spend_today {
+        format!("今日已用 ${spend_today:.2} · 变动 {} 笔", response.changes.len())
+    } else {
+        format!("预付余额 · 变动 {} 笔", response.changes.len())
+    };
+    Ok(balance_snapshot(provider, balance, "USD", secondary))
+}
+
+fn xai_cents(value: &str) -> Result<f64, OnlineError> {
+    parse_money(value).map(|cents| cents / 100.0)
+}
+
+/// xAI change timestamps are RFC 3339 strings or numeric epoch strings;
+/// unparseable stamps simply do not count toward the day's spend.
+fn xai_timestamp_ms(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+        return Some(datetime.timestamp_millis());
+    }
+    if trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        let numeric: i64 = trimmed.parse().ok()?;
+        return if numeric > 10_000_000_000 {
+            Some(numeric)
+        } else {
+            numeric.checked_mul(1_000)
+        };
+    }
+    None
+}
+
+#[derive(Default)]
+struct AnthropicModelTokens {
+    uncached_input: u64,
+    cache_read: u64,
+    cache_creation: u64,
+    output: u64,
+}
+
+fn parse_anthropic_messages(
+    provider: OnlineProvider,
+    json: &str,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let value: Value = serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    let buckets = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let mut models = BTreeMap::<String, AnthropicModelTokens>::new();
+    for bucket in buckets {
+        let results = bucket
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or(OnlineError::SchemaMismatch)?;
+        for result in results {
+            let uncached_input = analytics_u64(result, "uncached_input_tokens")?;
+            let cache_read = analytics_u64(result, "cache_read_input_tokens")?;
+            let output = analytics_u64(result, "output_tokens")?;
+            let cache_creation = cache_creation_tokens(result)?;
+            let model =
+                analytics_label(result.get("model").and_then(Value::as_str), "未分组模型");
+            let usage = models.entry(model).or_default();
+            usage.uncached_input = usage
+                .uncached_input
+                .checked_add(uncached_input)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usage.cache_read = usage
+                .cache_read
+                .checked_add(cache_read)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usage.cache_creation = usage
+                .cache_creation
+                .checked_add(cache_creation)
+                .ok_or(OnlineError::SchemaMismatch)?;
+            usage.output = usage
+                .output
+                .checked_add(output)
+                .ok_or(OnlineError::SchemaMismatch)?;
+        }
+    }
+    let mut total_tokens = 0_u64;
+    for usage in models.values() {
+        let model_total = usage
+            .uncached_input
+            .checked_add(usage.cache_read)
+            .and_then(|value| value.checked_add(usage.cache_creation))
+            .and_then(|value| value.checked_add(usage.output))
+            .ok_or(OnlineError::SchemaMismatch)?;
+        total_tokens = total_tokens
+            .checked_add(model_total)
+            .ok_or(OnlineError::SchemaMismatch)?;
+    }
+    let model_count = models.len();
+    let snapshot = OnlineSnapshot {
+        provider_id: provider.id().to_string(),
+        label: provider.label().to_string(),
+        source: provider.source().to_string(),
+        experimental: provider.experimental(),
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: None,
+        cooldown_ends_at_ms: None,
+        requests: None,
+        total_tokens: Some(total_tokens),
+        estimated_cost_cny: None,
+        primary_label: "今日 Token".to_string(),
+        primary_value: format_integer_with_commas(total_tokens),
+        secondary_value: format!("官方 Messages 用量报告 · {model_count} 个模型"),
+        detail_sections: vec![OnlineDetailSection {
+            title: "按模型 Token".to_string(),
+            entries: models
+                .into_iter()
+                .map(|(model, usage)| OnlineDetailEntry {
+                    label: model,
+                    used: Some(format_integer_with_commas(
+                        usage.uncached_input + usage.cache_read + usage.cache_creation + usage.output,
+                    )),
+                    remaining: None,
+                    limit: None,
+                    unit: " Token".to_string(),
+                    used_percent: None,
+                    window: Some(format!(
+                        "输入 {} · 缓存读 {} · 缓存写 {} · 输出 {}",
+                        usage.uncached_input, usage.cache_read, usage.cache_creation, usage.output
+                    )),
+                    start_at_ms: None,
+                    reset_at_ms: None,
+                    remaining_ms: None,
+                })
+                .collect(),
+        }],
+    };
+    Ok(snapshot)
+}
+
+fn cache_creation_tokens(result: &Value) -> Result<u64, OnlineError> {
+    let creation = result.get("cache_creation").ok_or(OnlineError::SchemaMismatch)?;
+    let five_minute = creation
+        .get("ephemeral_5m_input_tokens")
+        .and_then(Value::as_u64)
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let one_hour = creation
+        .get("ephemeral_1h_input_tokens")
+        .and_then(Value::as_u64)
+        .ok_or(OnlineError::SchemaMismatch)?;
+    five_minute
+        .checked_add(one_hour)
+        .ok_or(OnlineError::SchemaMismatch)
 }
 
 fn parse_openai_analytics(
@@ -2981,6 +3380,162 @@ mod tests {
                 .expect_err("empty key")
                 .code(),
             "ONLINE_INVALID_CREDENTIAL"
+        );
+    }
+
+    #[test]
+    fn parses_ppio_balance_from_ten_thousandths_of_yuan() {
+        let json = r#"{
+          "availableBalance":"1000000",
+          "cashBalance":"800000",
+          "creditLimit":"200000",
+          "pendingCharges":"0",
+          "outstandingInvoices":"0"
+        }"#;
+
+        let snapshot = parse_ppio(OnlineProvider::Ppio, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "ppio");
+        assert_eq!(snapshot.balance_cny, Some(100.0));
+        assert_eq!(snapshot.primary_value, "¥100.00");
+        assert!(snapshot.secondary_value.contains("现金 ¥80.00"));
+        assert!(snapshot.secondary_value.contains("信用额度 ¥20.00"));
+    }
+
+    #[test]
+    fn parses_xai_prepaid_balance_and_today_spend_from_usd_cents() {
+        let json = r#"{
+          "total":{"val":"5000"},
+          "changes":[
+            {"teamId":"team-1","changeOrigin":"PURCHASE","amount":{"val":"-10000"},
+             "createTime":"2026-08-15T10:00:00Z","createTs":"2026-08-15T10:00:00Z"},
+            {"teamId":"team-1","changeOrigin":"SPEND","amount":{"val":"1250"},
+             "createTime":"2026-08-16T02:00:00Z","createTs":"2026-08-16T02:00:00Z"},
+            {"teamId":"team-1","changeOrigin":"SPEND","amount":{"val":"750"},
+             "createTime":"2026-08-16T05:30:00Z","createTs":"2026-08-16T05:30:00Z"},
+            {"teamId":"team-1","changeOrigin":"SPEND","amount":{"val":"999"},
+             "createTime":"","createTs":""}
+          ]
+        }"#;
+        let range = OnlineUsageRange::new(1_786_838_400_000, 1_786_925_200_000)
+            .expect("2026-08-16 UTC day");
+
+        let snapshot =
+            parse_xai_balance(OnlineProvider::Xai, json, range).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "xai");
+        assert_eq!(snapshot.balance_original.as_ref().map(|money| money.amount), Some(50.0));
+        assert_eq!(snapshot.primary_value, "$50.00");
+        assert!(snapshot.secondary_value.contains("今日已用 $20.00"));
+        assert!(snapshot.secondary_value.contains("变动 4 笔"));
+    }
+
+    #[test]
+    fn accepts_xai_epoch_and_rfc3339_timestamps_and_skips_unparseable_ones() {
+        assert_eq!(
+            xai_timestamp_ms("2026-08-16T02:00:00Z"),
+            Some(1_786_845_600_000)
+        );
+        assert_eq!(xai_timestamp_ms("1786845600"), Some(1_786_845_600_000));
+        assert_eq!(xai_timestamp_ms("1786845600000"), Some(1_786_845_600_000));
+        assert_eq!(xai_timestamp_ms("not-a-date"), None);
+        assert_eq!(xai_timestamp_ms(""), None);
+    }
+
+    #[test]
+    fn validates_xai_management_credentials_at_the_rust_boundary() {
+        let credential = r#"{"managementKey":"xai-mgmt-test","teamId":"team-123"}"#;
+        let client = OnlineClient::new(OnlineProvider::Xai, credential).expect("client");
+        let request = client.request();
+        assert!(request.is_err(), "xai has no generic bearer endpoint");
+
+        assert!(
+            OnlineClient::new(OnlineProvider::Xai, r#"{"managementKey":"k","teamId":"../evil"}"#)
+                .is_err(),
+            "team ids with path characters must be rejected"
+        );
+        assert!(OnlineClient::new(OnlineProvider::Xai, "plain-key").is_err());
+    }
+
+    #[test]
+    fn parses_anthropic_messages_usage_by_model() {
+        let json = r#"{
+          "data":[
+            {
+              "starting_at":"2026-08-16T00:00:00Z",
+              "ending_at":"2026-08-17T00:00:00Z",
+              "results":[
+                {
+                  "model":"claude-opus-5",
+                  "uncached_input_tokens":1500,
+                  "cache_read_input_tokens":200,
+                  "cache_creation":{"ephemeral_5m_input_tokens":500,"ephemeral_1h_input_tokens":1000},
+                  "output_tokens":500
+                },
+                {
+                  "model":"claude-sonnet-5",
+                  "uncached_input_tokens":3000,
+                  "cache_read_input_tokens":0,
+                  "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},
+                  "output_tokens":1000
+                }
+              ]
+            }
+          ],
+          "has_more":false,
+          "next_page":null
+        }"#;
+
+        let snapshot =
+            parse_anthropic_messages(OnlineProvider::AnthropicApi, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "anthropic_api");
+        assert_eq!(snapshot.total_tokens, Some(7_700));
+        assert_eq!(snapshot.requests, None);
+        assert_eq!(snapshot.primary_value, "7,700");
+        assert!(snapshot.secondary_value.contains("2 个模型"));
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "claude-opus-5");
+        assert_eq!(entries[0].used, Some("3,700".to_string()));
+        assert!(entries[0].window.as_deref().unwrap_or_default().contains("缓存读 200"));
+    }
+
+    #[test]
+    fn parses_base_ids_as_the_first_instance() {
+        let instance = OnlineProvider::parse_instance("kimi_cn").expect("base instance");
+
+        assert_eq!(instance.provider, OnlineProvider::KimiCn);
+        assert_eq!(instance.id, "kimi_cn");
+        assert_eq!(instance.index, 1);
+    }
+
+    #[test]
+    fn parses_numbered_instances_of_the_same_provider() {
+        let instance = OnlineProvider::parse_instance("minimax_cn_2").expect("numbered instance");
+
+        assert_eq!(instance.provider, OnlineProvider::MiniMaxCn);
+        assert_eq!(instance.id, "minimax_cn_2");
+        assert_eq!(instance.index, 2);
+
+        let long = OnlineProvider::parse_instance("siliconflow_global_12").expect("long instance");
+        assert_eq!(long.provider, OnlineProvider::SiliconFlowGlobal);
+        assert_eq!(long.index, 12);
+    }
+
+    #[test]
+    fn rejects_invalid_or_unsafe_instance_ids() {
+        assert!(OnlineProvider::parse_instance("kimi_cn_1").is_none());
+        assert!(OnlineProvider::parse_instance("kimi_cn_02").is_none());
+        assert!(OnlineProvider::parse_instance("kimi_cn_x").is_none());
+        assert!(OnlineProvider::parse_instance("unknown_provider_2").is_none());
+        assert!(OnlineProvider::parse_instance("Kimi_Cn_2").is_none());
+        assert!(OnlineProvider::parse_instance("../kimi_cn_2").is_none());
+        assert!(OnlineProvider::parse_instance("kimi_cn_2_").is_none());
+        assert!(
+            OnlineProvider::parse_instance("siliconflow_global_999999999999")
+                .is_none(),
+            "ids longer than 32 characters must be rejected"
         );
     }
 }

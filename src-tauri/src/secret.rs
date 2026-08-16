@@ -248,6 +248,19 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "windows")]
+    fn stores_each_instance_of_the_same_provider_in_its_own_dpapi_file() {
+        let app_data = Path::new("C:/Users/example/AppData/Roaming/LLMUsage");
+
+        let first = SecretVault::new(app_data, "kimi_cn").expect("valid instance id");
+        let second = SecretVault::new(app_data, "kimi_cn_2").expect("valid instance id");
+
+        assert!(first.path.ends_with(Path::new("credentials/kimi_cn.dpapi")));
+        assert!(second.path.ends_with(Path::new("credentials/kimi_cn_2.dpapi")));
+        assert_ne!(first.path, second.path);
+    }
+
+    #[test]
     fn rejects_provider_ids_that_could_escape_credentials_dir() {
         assert!(matches!(
             SecretVault::new(Path::new("C:/app"), "../glm"),

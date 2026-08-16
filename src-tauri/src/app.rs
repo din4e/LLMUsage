@@ -3,7 +3,8 @@ use llm_usage_core::cache::{
 };
 use llm_usage_core::providers::glm::{GlmClient, GlmUsageSnapshot};
 use llm_usage_core::providers::online::{
-    OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot, OnlineUsageRange,
+    OnlineClient, OnlineError, OnlineProvider, OnlineSnapshot, OnlineUsageRange, ProviderInstance,
+    split_instance_suffix,
 };
 use llm_usage_core::secret::{SecretError, SecretVault};
 use serde::Serialize;
@@ -91,6 +92,21 @@ impl CommandError {
         }
     }
 
+    fn anthropic_admin_provider() -> Self {
+        Self {
+            code: "ANTHROPIC_API_SYNC_FAILED",
+            message:
+                "Anthropic API 同步失败：需要组织 Admin API Key；该报告统计 Messages API 用量，余额与 Claude Code 订阅额度不在此列",
+        }
+    }
+
+    fn xai_management_provider() -> Self {
+        Self {
+            code: "XAI_MANAGEMENT_SYNC_FAILED",
+            message: "xAI 同步失败：需要控制台生成的 Management Key 和团队 ID；推理用 API Key 无法查询预付余额",
+        }
+    }
+
     fn gemini_monitoring_provider() -> Self {
         Self {
             code: "GEMINI_MONITORING_SYNC_FAILED",
@@ -106,12 +122,39 @@ impl CommandError {
     }
 }
 
-fn glm_vault(app: &tauri::AppHandle) -> Result<SecretVault, CommandError> {
+fn glm_vault(app: &tauri::AppHandle, instance_id: &str) -> Result<SecretVault, CommandError> {
     let app_data = app
         .path()
         .app_data_dir()
         .map_err(|_| CommandError::credential())?;
-    SecretVault::new(&app_data, "glm").map_err(|_| CommandError::credential())
+    SecretVault::new(&app_data, instance_id).map_err(|_| CommandError::credential())
+}
+
+/// Validates a GLM instance id: `glm` (instance 1) or `glm_2` and up.
+fn glm_instance(provider_id: &str) -> Result<String, CommandError> {
+    if provider_id == "glm" {
+        return Ok(provider_id.to_string());
+    }
+    let (base, _index) =
+        split_instance_suffix(provider_id).ok_or_else(CommandError::invalid_provider)?;
+    if base != "glm" {
+        return Err(CommandError::invalid_provider());
+    }
+    Ok(provider_id.to_string())
+}
+
+/// Maps a credential file stem to its base provider id and instance index.
+/// Unknown or unsafe stems are ignored when listing configured instances.
+fn credential_instance(value: &str) -> Option<(String, u32)> {
+    if value == "glm" || OnlineProvider::from_id(value).is_some() {
+        return Some((value.to_string(), 1));
+    }
+    let (base, index) = split_instance_suffix(value)?;
+    if base == "glm" || OnlineProvider::from_id(base).is_some() {
+        Some((base.to_string(), index))
+    } else {
+        None
+    }
 }
 
 fn snapshot_cache(app: &tauri::AppHandle) -> Result<SnapshotCache, CommandError> {
@@ -151,19 +194,25 @@ fn cache_snapshot<T: Serialize>(
         .map_err(|_| CommandError::credential())
 }
 
-fn provider_vault(
-    app: &tauri::AppHandle,
-    provider: OnlineProvider,
-) -> Result<SecretVault, CommandError> {
+fn provider_vault(app: &tauri::AppHandle, instance_id: &str) -> Result<SecretVault, CommandError> {
     let app_data = app
         .path()
         .app_data_dir()
         .map_err(|_| CommandError::credential())?;
-    SecretVault::new(&app_data, provider.id()).map_err(|_| CommandError::credential())
+    SecretVault::new(&app_data, instance_id).map_err(|_| CommandError::credential())
 }
 
-fn online_provider(provider_id: &str) -> Result<OnlineProvider, CommandError> {
-    OnlineProvider::from_id(provider_id).ok_or_else(CommandError::invalid_provider)
+fn online_instance(provider_id: &str) -> Result<ProviderInstance, CommandError> {
+    OnlineProvider::parse_instance(provider_id).ok_or_else(CommandError::invalid_provider)
+}
+
+/// Stamps a fetched snapshot with the instance identity so the frontend,
+/// snapshot cache, and daily history all address the same instance row.
+fn apply_instance_identity(snapshot: &mut OnlineSnapshot, instance: &ProviderInstance) {
+    snapshot.provider_id = instance.id.clone();
+    if instance.index >= 2 {
+        snapshot.label = format!("{} · 实例 {}", snapshot.label, instance.index);
+    }
 }
 
 fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
@@ -174,6 +223,12 @@ fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
         }
         OnlineError::InvalidCredential if provider == OnlineProvider::ClaudeCode => {
             CommandError::claude_code_admin_provider()
+        }
+        OnlineError::InvalidCredential if provider == OnlineProvider::AnthropicApi => {
+            CommandError::anthropic_admin_provider()
+        }
+        OnlineError::InvalidCredential if provider == OnlineProvider::Xai => {
+            CommandError::xai_management_provider()
         }
         OnlineError::InvalidCredential if provider == OnlineProvider::Gemini => {
             CommandError::gemini_monitoring_provider()
@@ -211,6 +266,16 @@ fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
             CommandError::claude_code_admin_provider()
         }
         OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::AnthropicApi =>
+        {
+            CommandError::anthropic_admin_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::Xai =>
+        {
+            CommandError::xai_management_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
             if provider == OnlineProvider::Gemini =>
         {
             CommandError::gemini_monitoring_provider()
@@ -231,15 +296,35 @@ fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn has_glm_credential(app: tauri::AppHandle) -> bool {
-    glm_vault(&app).is_ok_and(|vault| vault.exists())
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub fn has_online_credential(app: tauri::AppHandle, provider_id: String) -> bool {
-    online_provider(&provider_id)
-        .and_then(|provider| provider_vault(&app, provider))
-        .is_ok_and(|vault| vault.exists())
+pub fn list_provider_instances(app: tauri::AppHandle) -> Vec<String> {
+    let app_data = match app.path().app_data_dir() {
+        Ok(app_data) => app_data,
+        Err(_) => return Vec::new(),
+    };
+    let entries = match std::fs::read_dir(app_data.join("credentials")) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut instances: Vec<(String, u32, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("dpapi") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Some((base, index)) = credential_instance(stem) {
+            instances.push((base, index, stem.to_string()));
+        }
+    }
+    instances.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then(left.1.cmp(&right.1))
+            .then(left.2.cmp(&right.2))
+    });
+    instances.into_iter().map(|(_, _, id)| id).collect()
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -259,12 +344,14 @@ pub fn load_daily_usage(app: tauri::AppHandle) -> Vec<DailyUsageRecord> {
 #[tauri::command(rename_all = "camelCase")]
 pub async fn configure_glm(
     app: tauri::AppHandle,
+    provider_id: String,
     api_key: String,
     local_date: String,
     slot: Option<i16>,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
+    let instance_id = glm_instance(&provider_id)?;
     let mut api_key = api_key;
     let client = GlmClient::new(&api_key).map_err(|_| CommandError::provider())?;
     let snapshot = match client.fetch_snapshot(&start_time, &end_time).await {
@@ -274,7 +361,7 @@ pub async fn configure_glm(
             return Err(CommandError::provider());
         }
     };
-    if let Err(error) = glm_vault(&app)?.save(api_key.trim()) {
+    if let Err(error) = glm_vault(&app, &instance_id)?.save(api_key.trim()) {
         api_key.zeroize();
         return Err(match error {
             SecretError::Invalid
@@ -284,13 +371,13 @@ pub async fn configure_glm(
         });
     }
     api_key.zeroize();
-    cache_snapshot(&app, "glm", "glm", &snapshot)?;
+    cache_snapshot(&app, &instance_id, "glm", &snapshot)?;
     record_daily_usage(
         &app,
         DailyUsageRecord {
             date: local_date,
             slot,
-            provider_id: "glm".into(),
+            provider_id: instance_id,
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
             estimated_cost_cny: None,
@@ -302,12 +389,14 @@ pub async fn configure_glm(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn sync_glm(
     app: tauri::AppHandle,
+    provider_id: String,
     local_date: String,
     slot: Option<i16>,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
-    let mut api_key = glm_vault(&app)?.load().map_err(|error| match error {
+    let instance_id = glm_instance(&provider_id)?;
+    let mut api_key = glm_vault(&app, &instance_id)?.load().map_err(|error| match error {
         SecretError::Missing => CommandError::not_configured(),
         _ => CommandError::credential(),
     })?;
@@ -323,13 +412,13 @@ pub async fn sync_glm(
         .fetch_snapshot(&start_time, &end_time)
         .await
         .map_err(|_| CommandError::provider())?;
-    cache_snapshot(&app, "glm", "glm", &snapshot)?;
+    cache_snapshot(&app, &instance_id, "glm", &snapshot)?;
     record_daily_usage(
         &app,
         DailyUsageRecord {
             date: local_date,
             slot,
-            provider_id: "glm".into(),
+            provider_id: instance_id,
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
             estimated_cost_cny: None,
@@ -348,39 +437,37 @@ pub async fn configure_online_provider(
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
-    let provider = online_provider(&provider_id)?;
+    let instance = online_instance(&provider_id)?;
     let range = OnlineUsageRange::new(start_time_ms, end_time_ms)
-        .map_err(|error| online_error(provider, error))?;
+        .map_err(|error| online_error(instance.provider, error))?;
     let mut api_key = api_key;
-    let client = match OnlineClient::new(provider, &api_key) {
+    let client = match OnlineClient::new(instance.provider, &api_key) {
         Ok(client) => client,
         Err(error) => {
             api_key.zeroize();
-            return Err(online_error(provider, error));
+            return Err(online_error(instance.provider, error));
         }
     };
-    let snapshot = match client.fetch_snapshot_for_range(range).await {
+    let mut snapshot = match client.fetch_snapshot_for_range(range).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             api_key.zeroize();
-            return Err(online_error(provider, error));
+            return Err(online_error(instance.provider, error));
         }
     };
-    if provider_vault(&app, provider)?
-        .save(api_key.trim())
-        .is_err()
-    {
+    if provider_vault(&app, &instance.id)?.save(api_key.trim()).is_err() {
         api_key.zeroize();
         return Err(CommandError::credential());
     }
     api_key.zeroize();
-    cache_snapshot(&app, provider.id(), "online", &snapshot)?;
+    apply_instance_identity(&mut snapshot, &instance);
+    cache_snapshot(&app, &instance.id, "online", &snapshot)?;
     record_daily_usage(
         &app,
         DailyUsageRecord {
             date: local_date,
             slot,
-            provider_id: provider.id().into(),
+            provider_id: instance.id.clone(),
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
             estimated_cost_cny: snapshot.estimated_cost_cny,
@@ -398,34 +485,35 @@ pub async fn sync_online_provider(
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
-    let provider = online_provider(&provider_id)?;
+    let instance = online_instance(&provider_id)?;
     let range = OnlineUsageRange::new(start_time_ms, end_time_ms)
-        .map_err(|error| online_error(provider, error))?;
-    let mut api_key = provider_vault(&app, provider)?
+        .map_err(|error| online_error(instance.provider, error))?;
+    let mut api_key = provider_vault(&app, &instance.id)?
         .load()
         .map_err(|error| match error {
             SecretError::Missing => CommandError::not_configured(),
             _ => CommandError::credential(),
         })?;
-    let client = match OnlineClient::new(provider, &api_key) {
+    let client = match OnlineClient::new(instance.provider, &api_key) {
         Ok(client) => client,
         Err(error) => {
             api_key.zeroize();
-            return Err(online_error(provider, error));
+            return Err(online_error(instance.provider, error));
         }
     };
     api_key.zeroize();
-    let snapshot = client
+    let mut snapshot = client
         .fetch_snapshot_for_range(range)
         .await
-        .map_err(|error| online_error(provider, error))?;
-    cache_snapshot(&app, provider.id(), "online", &snapshot)?;
+        .map_err(|error| online_error(instance.provider, error))?;
+    apply_instance_identity(&mut snapshot, &instance);
+    cache_snapshot(&app, &instance.id, "online", &snapshot)?;
     record_daily_usage(
         &app,
         DailyUsageRecord {
             date: local_date,
             slot,
-            provider_id: provider.id().into(),
+            provider_id: instance.id.clone(),
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
             estimated_cost_cny: snapshot.estimated_cost_cny,
@@ -439,17 +527,16 @@ pub fn delete_provider(app: tauri::AppHandle, provider_id: String) -> Result<(),
     // 1. Remove the stored credential. Forgetting a provider is idempotent:
     //    `SecretVault::delete` swallows a Missing entry (never configured, or
     //    already removed) so the UI never has to special-case prior state.
-    let secret_result: Result<(), SecretError> = if provider_id == "glm" {
-        match glm_vault(&app) {
-            Ok(vault) => vault.delete(),
-            Err(command_error) => return Err(command_error),
-        }
+    //    GLM instance ids (`glm`, `glm_2`, …) share the vault-by-id helper;
+    //    every other id must resolve to a known online provider instance.
+    let instance_id = if provider_id == "glm" || provider_id.starts_with("glm_") {
+        glm_instance(&provider_id)?
     } else {
-        let provider = online_provider(&provider_id)?;
-        match provider_vault(&app, provider) {
-            Ok(vault) => vault.delete(),
-            Err(command_error) => return Err(command_error),
-        }
+        online_instance(&provider_id)?.id
+    };
+    let secret_result = match provider_vault(&app, &instance_id) {
+        Ok(vault) => vault.delete(),
+        Err(command_error) => return Err(command_error),
     };
     if secret_result.is_err() {
         // Only genuine storage failures survive past the idempotent delete().
@@ -496,5 +583,90 @@ mod tests {
         let qwen = online_error(OnlineProvider::QwenCn, OnlineError::ApiRejected);
         assert!(qwen.message.contains("Prometheus"));
         assert!(qwen.message.contains("Coding Plan"));
+    }
+
+    #[test]
+    fn explains_anthropic_api_and_xai_management_credentials() {
+        let anthropic = online_error(OnlineProvider::AnthropicApi, OnlineError::ApiRejected);
+        assert_eq!(anthropic.code, "ANTHROPIC_API_SYNC_FAILED");
+        assert!(anthropic.message.contains("Admin API Key"));
+        assert!(anthropic.message.contains("Messages"));
+
+        let xai = online_error(OnlineProvider::Xai, OnlineError::InvalidCredential);
+        assert_eq!(xai.code, "XAI_MANAGEMENT_SYNC_FAILED");
+        assert!(xai.message.contains("Management Key"));
+        assert!(xai.message.contains("团队 ID"));
+    }
+
+    #[test]
+    fn validates_glm_instance_ids_for_every_command() {
+        assert_eq!(glm_instance("glm").ok().as_deref(), Some("glm"));
+        assert_eq!(glm_instance("glm_2").ok().as_deref(), Some("glm_2"));
+        assert_eq!(glm_instance("glm_12").ok().as_deref(), Some("glm_12"));
+
+        assert!(glm_instance("kimi_cn").is_err());
+        assert!(glm_instance("kimi_cn_2").is_err());
+        assert!(glm_instance("glm_1").is_err());
+        assert!(glm_instance("glm_02").is_err());
+        assert!(glm_instance("../glm_2").is_err());
+        assert!(glm_instance("").is_err());
+    }
+
+    #[test]
+    fn recognizes_credential_files_of_every_provider_instance() {
+        assert_eq!(
+            credential_instance("glm"),
+            Some(("glm".to_string(), 1))
+        );
+        assert_eq!(
+            credential_instance("glm_3"),
+            Some(("glm".to_string(), 3))
+        );
+        assert_eq!(
+            credential_instance("kimi_cn"),
+            Some(("kimi_cn".to_string(), 1))
+        );
+        assert_eq!(
+            credential_instance("qwen_global_2"),
+            Some(("qwen_global".to_string(), 2))
+        );
+
+        assert_eq!(credential_instance("unknown"), None);
+        assert_eq!(credential_instance("kimi_cn_1"), None);
+        assert_eq!(credential_instance("GLM"), None);
+    }
+
+    #[test]
+    fn stamps_snapshots_with_the_instance_identity() {
+        let mut snapshot = empty_snapshot("kimi_cn", "Kimi Code");
+        let base = OnlineProvider::parse_instance("kimi_cn").expect("base instance");
+        apply_instance_identity(&mut snapshot, &base);
+        assert_eq!(snapshot.provider_id, "kimi_cn");
+        assert_eq!(snapshot.label, "Kimi Code");
+
+        let second = OnlineProvider::parse_instance("kimi_cn_2").expect("second instance");
+        apply_instance_identity(&mut snapshot, &second);
+        assert_eq!(snapshot.provider_id, "kimi_cn_2");
+        assert_eq!(snapshot.label, "Kimi Code · 实例 2");
+    }
+
+    fn empty_snapshot(provider_id: &str, label: &str) -> OnlineSnapshot {
+        OnlineSnapshot {
+            provider_id: provider_id.to_string(),
+            label: label.to_string(),
+            source: "official_balance".to_string(),
+            experimental: false,
+            balance_cny: None,
+            balance_original: None,
+            quota_used_percent: None,
+            cooldown_ends_at_ms: None,
+            requests: None,
+            total_tokens: None,
+            estimated_cost_cny: None,
+            primary_label: "余额".to_string(),
+            primary_value: "¥0.00".to_string(),
+            secondary_value: String::new(),
+            detail_sections: Vec::new(),
+        }
     }
 }
