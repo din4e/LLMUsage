@@ -3,6 +3,32 @@ import { formatInteger, type DailyTrendPoint } from "./domain";
 const svgElement = <K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] =>
   document.createElementNS("http://www.w3.org/2000/svg", name);
 
+/** Catmull-Rom spline converted to cubic beziers, clamped to the plot box so
+ *  smoothing never draws outside the value range. */
+function smoothLinePath(
+  coords: ReadonlyArray<readonly [number, number]>,
+  top: number,
+  bottom: number,
+): string {
+  if (coords.length < 3) {
+    return coords.map(([px, py], index) => `${index ? "L" : "M"}${px},${py}`).join(" ");
+  }
+  const clampY = (value: number) => Math.min(Math.max(value, top), bottom);
+  let path = `M${coords[0]![0]},${coords[0]![1]}`;
+  for (let index = 0; index < coords.length - 1; index += 1) {
+    const previous = coords[index - 1] ?? coords[index]!;
+    const current = coords[index]!;
+    const next = coords[index + 1]!;
+    const after = coords[index + 2] ?? next;
+    const firstControlX = current[0] + (next[0] - previous[0]) / 6;
+    const firstControlY = clampY(current[1] + (next[1] - previous[1]) / 6);
+    const secondControlX = next[0] - (after[0] - current[0]) / 6;
+    const secondControlY = clampY(next[1] - (after[1] - current[1]) / 6);
+    path += ` C${firstControlX},${firstControlY} ${secondControlX},${secondControlY} ${next[0]},${next[1]}`;
+  }
+  return path;
+}
+
 export function renderDailyTrendChart(
   chart: SVGSVGElement,
   empty: HTMLElement | null,
@@ -20,10 +46,11 @@ export function renderDailyTrendChart(
   }
 
   const width = 900;
-  const height = 250;
-  const plot = { left: 58, right: 18, top: 18, bottom: 34 };
+  const height = 190;
+  const plot = { left: 48, right: 16, top: 12, bottom: 26 };
   const plotWidth = width - plot.left - plot.right;
   const plotHeight = height - plot.top - plot.bottom;
+  const baseY = plot.top + plotHeight;
   const maxTokens = Math.max(...points.map((point) => point.totalTokens ?? 0), 1);
   const x = (index: number) => plot.left + (points.length === 1
     ? plotWidth / 2
@@ -48,20 +75,57 @@ export function renderDailyTrendChart(
     chart.append(line, label);
   }
 
+  const coords = points.map((point, index) => [x(index), y(point.totalTokens ?? 0)] as const);
+  const linePath = smoothLinePath(coords, plot.top, baseY);
+
+  // Soft gradient fill under the curve anchors the eye on the trend shape.
+  const defs = svgElement("defs");
+  const gradient = svgElement("linearGradient");
+  gradient.setAttribute("id", "trend-area-fill");
+  gradient.setAttribute("x1", "0");
+  gradient.setAttribute("y1", "0");
+  gradient.setAttribute("x2", "0");
+  gradient.setAttribute("y2", "1");
+  const topStop = svgElement("stop");
+  topStop.setAttribute("offset", "0");
+  topStop.style.stopColor = "var(--accent)";
+  topStop.setAttribute("stop-opacity", "0.22");
+  const bottomStop = svgElement("stop");
+  bottomStop.setAttribute("offset", "1");
+  bottomStop.style.stopColor = "var(--accent)";
+  bottomStop.setAttribute("stop-opacity", "0");
+  gradient.append(topStop, bottomStop);
+  defs.append(gradient);
+  chart.append(defs);
+
+  if (coords.length > 1) {
+    const area = svgElement("path");
+    area.setAttribute("class", "trend-area");
+    area.setAttribute(
+      "d",
+      `${linePath} L${coords[coords.length - 1]![0]},${baseY} L${coords[0]![0]},${baseY} Z`,
+    );
+    chart.append(area);
+  }
+
   const path = svgElement("path");
   path.setAttribute("class", "trend-line");
-  path.setAttribute("d", points
-    .map((point, index) => `${index ? "L" : "M"}${x(index)},${y(point.totalTokens ?? 0)}`)
-    .join(" "));
+  path.setAttribute("d", linePath);
   chart.append(path);
 
-  const labelIndexes = new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]);
+  const lastIndex = points.length - 1;
+  const labelIndexes = new Set([0, Math.floor(lastIndex / 2), lastIndex]);
   points.forEach((point, index) => {
+    const [pointX, pointY] = coords[index]!;
     const circle = svgElement("circle");
     circle.setAttribute("class", "trend-point");
-    circle.setAttribute("cx", String(x(index)));
-    circle.setAttribute("cy", String(y(point.totalTokens ?? 0)));
-    circle.setAttribute("r", points.length > 48 ? "2" : "4");
+    if (index === lastIndex) circle.classList.add("latest");
+    circle.setAttribute("cx", String(pointX));
+    circle.setAttribute("cy", String(pointY));
+    circle.setAttribute(
+      "r",
+      index === lastIndex ? (points.length > 48 ? "2.6" : "5") : points.length > 48 ? "2" : "3.5",
+    );
     circle.setAttribute("tabindex", "0");
     const cost = point.estimatedCostCny == null
       ? "成本不可用"
@@ -77,13 +141,28 @@ export function renderDailyTrendChart(
     if (labelIndexes.has(index)) {
       const label = svgElement("text");
       label.setAttribute("class", "trend-axis-label trend-date-label");
-      label.setAttribute("x", String(x(index)));
-      label.setAttribute("y", String(height - 9));
-      label.setAttribute("text-anchor", index === 0 ? "start" : index === points.length - 1 ? "end" : "middle");
+      label.setAttribute("x", String(pointX));
+      label.setAttribute("y", String(height - 8));
+      label.setAttribute("text-anchor", index === 0 ? "start" : index === lastIndex ? "end" : "middle");
       label.textContent = point.label;
       chart.append(label);
     }
   });
+
+  // Latest value rides next to the last point so the current figure is readable
+  // without hovering.
+  const lastPoint = points[lastIndex]!;
+  const lastCoord = coords[lastIndex]!;
+  const latestLabel = svgElement("text");
+  latestLabel.setAttribute("class", "trend-axis-label trend-value-label");
+  latestLabel.setAttribute("x", String(lastCoord[0] - 9));
+  latestLabel.setAttribute(
+    "y",
+    String(lastCoord[1] - 9 < plot.top + 12 ? lastCoord[1] + 18 : lastCoord[1] - 9),
+  );
+  latestLabel.setAttribute("text-anchor", "end");
+  latestLabel.textContent = formatInteger(lastPoint.totalTokens ?? 0);
+  chart.append(latestLabel);
 
   const totalTokens = intraday
     ? points[points.length - 1]?.totalTokens ?? 0

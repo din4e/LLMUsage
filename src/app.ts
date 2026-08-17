@@ -19,12 +19,16 @@ import {
   type TrendRange,
 } from "./domain";
 import {
+  INSTANCE_REMARK_MAX_LENGTH,
+  deserializeProviderCredential,
   hasConfiguredInstance,
+  instanceBadgeLabel,
+  instanceDisplayName,
   nextInstanceId,
   providerDefinition,
   providerDefinitions,
+  sanitizeInstanceRemark,
   serializeProviderCredential,
-  type ProviderDefinition,
 } from "./providers";
 import { initializeWindowControls } from "./window-controls";
 import { renderDailyTrendChart } from "./trend-chart";
@@ -72,7 +76,8 @@ const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) 
 const refreshButton = byId<HTMLButtonElement>("refresh-button");
 const syncStatus = byId<HTMLElement>("sync-status");
 const themeButton = byId<HTMLButtonElement>("theme-toggle");
-const autoSyncInterval = byId<HTMLSelectElement>("auto-sync-interval");
+const autoSyncToggle = byId<HTMLButtonElement>("auto-sync-toggle");
+const autoSyncMenu = byId<HTMLElement>("auto-sync-menu");
 const dialog = byId<HTMLDialogElement>("provider-dialog");
 const providerForm = byId<HTMLFormElement>("provider-form");
 const dialogTitle = byId<HTMLElement>("dialog-title");
@@ -93,11 +98,18 @@ const confirmForm = byId<HTMLFormElement>("confirm-form");
 const confirmMessage = byId<HTMLElement>("confirm-message");
 const confirmAccept = byId<HTMLButtonElement>("confirm-accept");
 let pendingDeleteInstance: string | null = null;
+const renameDialog = byId<HTMLDialogElement>("rename-dialog");
+const renameForm = byId<HTMLFormElement>("rename-form");
+const renameTitle = byId<HTMLElement>("rename-title");
+const renameInput = byId<HTMLInputElement>("rename-input");
+let pendingRenameInstance: string | null = null;
 const configuredInstanceIds = new Set<string>();
 let selectedInstance = "glm";
 const glmSnapshots = new Map<string, GlmSnapshot>();
 const onlineSnapshots = new Map<string, OnlineSnapshot>();
 const PROVIDER_ORDER_KEY = "llm-usage:provider-order";
+const INSTANCE_REMARKS_KEY = "llm-usage:instance-remarks";
+const instanceRemarks = loadSavedInstanceRemarks();
 const savedInstanceOrder = loadSavedInstanceOrder();
 let dragSourceRow: HTMLElement | null = null;
 let autoSyncTimer: number | null = null;
@@ -159,8 +171,6 @@ function createProviderRow(instanceId: string): HTMLElement | null {
   if (!provider) return null;
   const base = provider.id;
   const isGlm = base === "glm";
-  const index = instanceIndexOf(instanceId);
-  const displayName = instanceDisplayName(provider, index);
   const row = document.createElement("article");
   row.className = `provider-row${isGlm ? " featured" : ""}`;
   row.dataset.provider = instanceId;
@@ -171,7 +181,6 @@ function createProviderRow(instanceId: string): HTMLElement | null {
   handle.className = "drag-handle";
   handle.textContent = "⠿";
   handle.title = "拖拽调整顺序，或按 Alt+↑/↓ 移动";
-  handle.setAttribute("aria-label", `调整 ${displayName} 顺序：按住 Alt 并使用上下箭头移动`);
   attachRowDragging(row, handle);
 
   const identity = document.createElement("div");
@@ -182,13 +191,7 @@ function createProviderRow(instanceId: string): HTMLElement | null {
   mark.src = provider.logo;
   mark.alt = "";
   const heading = document.createElement("h3");
-  heading.textContent = provider.name;
-  if (index >= 2) {
-    const badge = document.createElement("span");
-    badge.className = "instance-badge";
-    badge.textContent = `实例 ${index}`;
-    heading.append(badge);
-  }
+  heading.className = "provider-name";
   identity.append(mark, heading);
 
   const usage = document.createElement("div");
@@ -227,25 +230,68 @@ function createProviderRow(instanceId: string): HTMLElement | null {
   configure.dataset.provider = instanceId;
   configure.textContent = "修改配置";
 
+  const remarkButton = document.createElement("button");
+  remarkButton.className = "row-action";
+  remarkButton.type = "button";
+  remarkButton.dataset.action = "rename-provider";
+  remarkButton.dataset.provider = instanceId;
+  remarkButton.textContent = "备注";
+
   const remove = document.createElement("button");
   remove.className = "row-action danger";
   remove.type = "button";
   remove.dataset.action = "delete-provider";
   remove.dataset.provider = instanceId;
-  remove.setAttribute("aria-label", `删除 ${displayName}`);
   remove.textContent = "删除";
 
   const actions = document.createElement("div");
   actions.className = "row-actions";
-  actions.append(configure, remove);
+  actions.append(configure, remarkButton, remove);
 
   const details = document.createElement("div");
   details.className = "provider-details";
   details.id = `${instanceId}-details`;
-  details.setAttribute("aria-label", `${displayName}完整明细`);
   details.hidden = true;
   row.append(handle, identity, usage, quota, actions, details);
+  applyRowIdentity(row, instanceId);
   return row;
+}
+
+/** Writes the provider name, instance badge, and identity aria-labels onto a row.
+ *  Called at row creation and again after a remark change. */
+function applyRowIdentity(row: HTMLElement, instanceId: string) {
+  const provider = providerDefinition(instanceId);
+  if (!provider) return;
+  const index = instanceIndexOf(instanceId);
+  const remark = instanceRemark(instanceId);
+  const displayName = instanceDisplayName(provider, index, remark);
+  const heading = row.querySelector<HTMLElement>(".provider-name");
+  if (heading) {
+    heading.replaceChildren(provider.name);
+    const badgeLabel = instanceBadgeLabel(index, remark);
+    if (badgeLabel) {
+      const badge = document.createElement("span");
+      badge.className = "instance-badge";
+      badge.textContent = badgeLabel;
+      heading.append(badge);
+    }
+  }
+  row.querySelector<HTMLElement>(".drag-handle")?.setAttribute(
+    "aria-label",
+    `调整 ${displayName} 顺序：按住 Alt 并使用上下箭头移动`,
+  );
+  row.querySelector<HTMLButtonElement>('button[data-action="rename-provider"]')?.setAttribute(
+    "aria-label",
+    `设置 ${displayName} 备注名称`,
+  );
+  row.querySelector<HTMLButtonElement>('button[data-action="delete-provider"]')?.setAttribute(
+    "aria-label",
+    `删除 ${displayName}`,
+  );
+  row.querySelector<HTMLElement>(".provider-details")?.setAttribute(
+    "aria-label",
+    `${displayName}完整明细`,
+  );
 }
 
 /** Wires drag-to-reorder plus an Alt+arrow keyboard equivalent onto a row. */
@@ -348,6 +394,38 @@ function rowInstanceIds(): string[] {
   ).filter(Boolean);
 }
 
+function loadSavedInstanceRemarks(): Map<string, string> {
+  const remarks = new Map<string, string>();
+  try {
+    const raw = window.localStorage.getItem(INSTANCE_REMARKS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return remarks;
+    for (const [instanceId, remark] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof remark !== "string" || instanceId.length > 64) continue;
+      const sanitized = sanitizeInstanceRemark(remark);
+      if (sanitized) remarks.set(instanceId, sanitized);
+    }
+  } catch {
+    // Remarks are a convenience; ignore storage failures.
+  }
+  return remarks;
+}
+
+function persistInstanceRemarks() {
+  try {
+    window.localStorage.setItem(
+      INSTANCE_REMARKS_KEY,
+      JSON.stringify(Object.fromEntries(instanceRemarks)),
+    );
+  } catch {
+    // Remarks are a convenience; ignore storage failures.
+  }
+}
+
+function instanceRemark(instanceId: string): string {
+  return instanceRemarks.get(instanceId) ?? "";
+}
+
 /** Sort key honoring the saved drag order, then catalog order as fallback. */
 function instanceOrderKey(instanceId: string): [number, number, number] {
   const saved = savedInstanceOrder.indexOf(instanceId);
@@ -369,10 +447,6 @@ function sortProviderRows() {
     );
   });
   for (const row of rows) providerList?.append(row);
-}
-
-function instanceDisplayName(provider: ProviderDefinition, index: number): string {
-  return index >= 2 ? `${provider.name} · 实例 ${index}` : provider.name;
 }
 
 function setInstanceConfigured(instanceId: string) {
@@ -426,7 +500,14 @@ function renderProviderCatalog() {
 function setStatus(message: string, state: "ready" | "syncing" | "error" = "ready") {
   syncStatus?.classList.toggle("syncing", state === "syncing");
   syncStatus?.classList.toggle("error", state === "error");
-  if (syncStatus?.lastChild) syncStatus.lastChild.textContent = ` ${message}`;
+  if (!syncStatus) return;
+  // The indicator ships with an empty text node after its dot; keep writes on
+  // that node so the dot element itself is never turned into a text container.
+  if (syncStatus.lastChild?.nodeType === Node.TEXT_NODE) syncStatus.lastChild.textContent = ` ${message}`;
+  else syncStatus.append(` ${message}`);
+  // The bar truncates long errors; the full text stays available on hover.
+  if (message.trim()) syncStatus.title = message.trim();
+  else syncStatus.removeAttribute("title");
 }
 
 type ViewId = "dashboard" | "about";
@@ -485,7 +566,6 @@ function renderGlm(instanceId: string, snapshot: GlmSnapshot) {
   renderProviderDetails(instanceId, snapshot.detailSections);
   updateCooldown();
   renderTotals();
-  setStatus("刚刚完成在线同步");
 }
 
 function renderOnline(snapshot: OnlineSnapshot) {
@@ -567,10 +647,11 @@ function updateCooldown() {
   }
 }
 
-async function syncGlm(instanceId: string) {
+/** Syncs one GLM instance; resolves false when the attempt failed. */
+async function syncGlm(instanceId: string): Promise<boolean> {
   if (!isTauri()) {
     setStatus("浏览器预览模式");
-    return;
+    return false;
   }
   setStatus(`正在连接 ${providerName(instanceId)}`, "syncing");
   try {
@@ -580,14 +661,17 @@ async function syncGlm(instanceId: string) {
       slot: localQuarterSlot(),
       ...localDayRange(),
     }));
+    return true;
   } catch (reason) {
     const error = reason as CommandError;
     setStatus(error.message ?? "同步失败，请稍后重试", "error");
+    return false;
   }
 }
 
-async function syncOnline(instanceId: string) {
-  if (!isTauri()) return;
+/** Syncs one online provider instance; resolves false when the attempt failed. */
+async function syncOnline(instanceId: string): Promise<boolean> {
+  if (!isTauri()) return false;
   try {
     renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", {
       providerId: instanceId,
@@ -595,9 +679,10 @@ async function syncOnline(instanceId: string) {
       slot: localQuarterSlot(),
       ...localDayRangeMs(),
     }));
+    return true;
   } catch (reason) {
-    const error = reason as CommandError;
-    setStatus(`${providerName(instanceId)}：${error.message ?? "同步失败"}`, "error");
+    setStatus(instanceError(instanceId, "同步失败", reason), "error");
+    return false;
   }
 }
 
@@ -627,7 +712,10 @@ async function syncAll() {
     const syncTasks = orderedConfiguredInstances().map((instanceId) =>
       baseProviderId(instanceId) === "glm" ? syncGlm(instanceId) : syncOnline(instanceId),
     );
-    await Promise.all(syncTasks);
+    // Success stays silent: the status bar only narrates syncing, errors, and
+    // guidance, so a fully successful round clears any leftover text.
+    const results = await Promise.all(syncTasks);
+    if (results.every((succeeded) => succeeded)) setStatus("");
     renderTotals();
     await loadDailyUsage();
   } finally {
@@ -638,7 +726,14 @@ async function syncAll() {
 function providerName(instanceId: string) {
   const provider = providerDefinition(instanceId);
   if (!provider) return "供应商";
-  return instanceDisplayName(provider, instanceIndexOf(instanceId));
+  return instanceDisplayName(provider, instanceIndexOf(instanceId), instanceRemark(instanceId));
+}
+
+/** Prefixes a sync/delete error with the instance name unless it already has it. */
+function instanceError(instanceId: string, fallback: string, reason: unknown): string {
+  const message = (reason as CommandError)?.message ?? fallback;
+  const name = providerName(instanceId);
+  return message.startsWith(name) ? message : `${name}：${message}`;
 }
 
 function deleteProviderInstance(instanceId: string) {
@@ -675,7 +770,6 @@ async function loadCache() {
       if (entry.kind === "glm") renderGlm(entry.providerId, entry.snapshot as GlmSnapshot);
       if (entry.kind === "online") renderOnline(entry.snapshot as OnlineSnapshot);
     }
-    if (cached.length > 0) setStatus("已载入本地缓存，正在刷新");
   } catch {
     setStatus("本地缓存不可用", "error");
   }
@@ -694,12 +788,33 @@ function applyAutoSync(seconds: number) {
   setStatus(`自动拉取：${seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`}`);
 }
 
+function autoSyncLabel(seconds: number): string {
+  if (seconds <= 0) return "关闭";
+  return seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`;
+}
+
+/** Reflects the chosen interval on the rail toggle and its flyout menu. */
+function updateAutoSyncMenu(seconds: number) {
+  for (const item of autoSyncMenu?.querySelectorAll<HTMLButtonElement>("button[data-seconds]") ?? []) {
+    const active = Number(item.dataset.seconds) === seconds;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-pressed", String(active));
+  }
+  autoSyncToggle?.classList.toggle("on", seconds > 0);
+  if (autoSyncToggle) autoSyncToggle.title = `自动拉取：${autoSyncLabel(seconds)}`;
+}
+
+function setAutoSyncMenu(open: boolean) {
+  if (autoSyncMenu) autoSyncMenu.hidden = !open;
+  autoSyncToggle?.setAttribute("aria-expanded", String(open));
+}
+
 refreshButton?.addEventListener("click", async () => {
   refreshButton.disabled = true;
-  refreshButton.textContent = "同步中…";
+  refreshButton.classList.add("working");
   await syncAll();
   refreshButton.disabled = false;
-  refreshButton.textContent = "立即同步";
+  refreshButton.classList.remove("working");
 });
 
 themeButton?.addEventListener("click", () => {
@@ -707,14 +822,11 @@ themeButton?.addEventListener("click", () => {
   themeButton.setAttribute("aria-label", light ? "切换深色主题" : "切换浅色主题");
 });
 
-autoSyncInterval?.addEventListener("change", () => {
-  const seconds = Number(autoSyncInterval.value);
-  window.localStorage.setItem("llm-usage:auto-sync-seconds", String(seconds));
-  applyAutoSync(seconds);
-});
-
 document.addEventListener("click", (event) => {
-  const button = (event.target as Element | null)?.closest<HTMLButtonElement>("button[data-action]");
+  const target = event.target as Element | null;
+  // Any click outside the flyout host closes the auto-sync menu.
+  if (!autoSyncMenu?.hidden && !target?.closest(".rail-menu-host")) setAutoSyncMenu(false);
+  const button = target?.closest<HTMLButtonElement>("button[data-action]");
   if (!button) return;
   if (button.dataset.action === "close-provider-dialog") {
     dialog?.close();
@@ -744,6 +856,25 @@ document.addEventListener("click", (event) => {
   if (button.dataset.action === "close-confirm-dialog") {
     confirmDialog?.close();
   }
+  if (button.dataset.action === "toggle-auto-sync") {
+    setAutoSyncMenu(autoSyncMenu?.hidden === true);
+    return;
+  }
+  if (button.dataset.action === "set-auto-sync") {
+    const seconds = Number(button.dataset.seconds ?? "0");
+    window.localStorage.setItem("llm-usage:auto-sync-seconds", String(seconds));
+    applyAutoSync(seconds);
+    updateAutoSyncMenu(seconds);
+    setAutoSyncMenu(false);
+    return;
+  }
+  if (button.dataset.action === "rename-provider") {
+    openRenameDialog(button.dataset.provider ?? "");
+    return;
+  }
+  if (button.dataset.action === "close-rename-dialog") {
+    renameDialog?.close();
+  }
 });
 
 function openProviderDialog(instanceId: string) {
@@ -752,7 +883,7 @@ function openProviderDialog(instanceId: string) {
   selectedInstance = instanceId;
   catalogDialog?.close();
   if (dialogTitle) {
-    dialogTitle.textContent = `配置 ${instanceDisplayName(provider, instanceIndexOf(instanceId))}`;
+    dialogTitle.textContent = `配置 ${instanceDisplayName(provider, instanceIndexOf(instanceId), instanceRemark(instanceId))}`;
   }
   if (dialogCopy) dialogCopy.textContent = provider.credentialHint;
   credentialFields.replaceChildren(...provider.fields.map((field) => {
@@ -771,10 +902,61 @@ function openProviderDialog(instanceId: string) {
     input.required = true;
     input.addEventListener("input", () => input.setCustomValidity(""));
     wrapper.append(label, input);
+    if (field.type === "password") {
+      input.classList.add("has-reveal");
+      wrapper.append(createRevealToggle(input, field.label));
+    }
     return wrapper;
   }));
   dialog?.showModal();
   credentialFields.querySelector<HTMLInputElement>("input")?.focus();
+  void prefillCredentialFields(instanceId);
+}
+
+/** Eye toggle that reveals a (possibly stored) secret field in the dialog. */
+function createRevealToggle(input: HTMLInputElement, label: string): HTMLButtonElement {
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "credential-toggle";
+  toggle.textContent = "显示";
+  toggle.setAttribute("aria-label", `显示 ${label}`);
+  toggle.addEventListener("click", () => {
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    toggle.textContent = reveal ? "隐藏" : "显示";
+    toggle.setAttribute("aria-label", `${reveal ? "隐藏" : "显示"} ${label}`);
+  });
+  return toggle;
+}
+
+/** Refills the dialog with the stored credential so it can be viewed or tweaked. */
+async function prefillCredentialFields(instanceId: string) {
+  if (!isTauri() || !credentialFields || !configuredInstanceIds.has(instanceId)) return;
+  try {
+    const credential = await invoke<string>("load_provider_credential", {
+      providerId: instanceId,
+    });
+    const values = deserializeProviderCredential(instanceId, credential);
+    for (const input of credentialFields.querySelectorAll<HTMLInputElement>("input")) {
+      const value = values[input.name];
+      if (typeof value === "string") input.value = value;
+    }
+  } catch {
+    // Not configured or vault unavailable: keep the fields blank.
+  }
+}
+
+function openRenameDialog(instanceId: string) {
+  if (!providerDefinition(instanceId) || !renameDialog) return;
+  pendingRenameInstance = instanceId;
+  if (renameTitle) renameTitle.textContent = `备注 · ${providerName(instanceId)}`;
+  if (renameInput) {
+    renameInput.value = instanceRemark(instanceId);
+    renameInput.maxLength = INSTANCE_REMARK_MAX_LENGTH;
+  }
+  renameDialog.showModal();
+  renameInput?.focus();
+  renameInput?.select();
 }
 
 providerForm?.addEventListener("submit", async (event) => {
@@ -810,7 +992,6 @@ providerForm?.addEventListener("submit", async (event) => {
         ...localDayRangeMs(),
       });
       renderOnline(snapshot);
-      setStatus(`${snapshot.label} 已完成在线同步`);
     }
     await loadDailyUsage();
     dialog?.close();
@@ -841,16 +1022,18 @@ confirmForm?.addEventListener("submit", async (event) => {
     configuredInstanceIds.delete(instanceId);
     onlineSnapshots.delete(instanceId);
     glmSnapshots.delete(instanceId);
+    // Freed instance ids are reused by nextInstanceId, so a stale remark must
+    // not survive into a future instance of the same slot.
+    instanceRemarks.delete(instanceId);
+    persistInstanceRemarks();
     providerList
       ?.querySelector<HTMLElement>(`.provider-row[data-provider="${instanceId}"]`)
       ?.remove();
     renderProviderVisibility();
     renderTotals();
     await loadDailyUsage();
-    setStatus(`已删除 ${providerName(instanceId)}`);
   } catch (reason) {
-    const error = reason as CommandError;
-    setStatus(`${providerName(instanceId)}：${error.message ?? "删除失败"}`, "error");
+    setStatus(instanceError(instanceId, "删除失败", reason), "error");
   } finally {
     pendingDeleteInstance = null;
     confirmDialog?.close();
@@ -865,6 +1048,28 @@ confirmDialog?.addEventListener("close", () => {
     confirmAccept.disabled = false;
     confirmAccept.textContent = "删除";
   }
+});
+
+renameForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const instanceId = pendingRenameInstance;
+  if (!instanceId) {
+    renameDialog?.close();
+    return;
+  }
+  const remark = sanitizeInstanceRemark(renameInput?.value ?? "");
+  if (remark) instanceRemarks.set(instanceId, remark);
+  else instanceRemarks.delete(instanceId);
+  persistInstanceRemarks();
+  const row = providerList?.querySelector<HTMLElement>(
+    `.provider-row[data-provider="${instanceId}"]`,
+  );
+  if (row) applyRowIdentity(row, instanceId);
+  renameDialog?.close();
+});
+
+renameDialog?.addEventListener("close", () => {
+  pendingRenameInstance = null;
 });
 trendProvider?.addEventListener("change", renderTrend);
 trendRange?.addEventListener("click", (event) => {
@@ -884,8 +1089,9 @@ applyRoute();
 void populateAboutMetadata();
 void (async () => {
   const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");
-  if (autoSyncInterval && Number.isFinite(savedAutoSync)) autoSyncInterval.value = String(savedAutoSync);
-  applyAutoSync(Number.isFinite(savedAutoSync) ? savedAutoSync : 0);
+  const autoSyncSeconds = Number.isFinite(savedAutoSync) ? savedAutoSync : 0;
+  updateAutoSyncMenu(autoSyncSeconds);
+  applyAutoSync(autoSyncSeconds);
   await loadProviderInstances();
   await loadCache();
   await loadDailyUsage();

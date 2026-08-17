@@ -215,6 +215,32 @@ export function nextInstanceId(baseId: string, configured: ReadonlySet<string>):
   return maxIndex === 0 ? baseId : `${baseId}_${maxIndex + 1}`;
 }
 
+/** Longest instance remark kept; longer input is truncated on save. */
+export const INSTANCE_REMARK_MAX_LENGTH = 24;
+
+/** Trims, collapses whitespace, and truncates a user-typed instance remark. */
+export function sanitizeInstanceRemark(raw: string): string {
+  const collapsed = raw.trim().replace(/\s+/g, " ");
+  // Truncate by code points so a CJK or emoji remark is never cut mid-character.
+  return Array.from(collapsed).slice(0, INSTANCE_REMARK_MAX_LENGTH).join("").trimEnd();
+}
+
+/** Badge text for an instance row: a remark wins over the "实例 N" fallback. */
+export function instanceBadgeLabel(index: number, remark: string): string {
+  if (remark) return remark;
+  return index >= 2 ? `实例 ${index}` : "";
+}
+
+/** Full instance name used in dialog titles, statuses, and aria labels. */
+export function instanceDisplayName(
+  provider: ProviderDefinition,
+  index: number,
+  remark = "",
+): string {
+  if (remark) return `${provider.name} · ${remark}`;
+  return index >= 2 ? `${provider.name} · 实例 ${index}` : provider.name;
+}
+
 export function serializeProviderCredential(
   providerId: string,
   values: Readonly<Record<string, string>>,
@@ -228,4 +254,31 @@ export function serializeProviderCredential(
   if (Object.values(fields).some((value) => !value)) throw new Error("请填写所有必填项");
   if (provider.fields.length === 1 && provider.fields[0]?.id === "apiKey") return fields.apiKey ?? "";
   return JSON.stringify(fields);
+}
+
+/** Parses a stored credential back into per-field values for the edit dialog. */
+export function deserializeProviderCredential(
+  providerId: string,
+  credential: string,
+): Record<string, string> {
+  const provider = providerDefinition(providerId);
+  if (!provider) return {};
+  const trimmed = credential.trim();
+  if (!trimmed) return {};
+  let values: Record<string, unknown>;
+  if (trimmed.startsWith("{")) {
+    try {
+      values = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  } else {
+    // Single-field providers store the bare API key.
+    values = { apiKey: trimmed };
+  }
+  const fields: Record<string, string> = {};
+  for (const field of provider.fields) {
+    if (typeof values[field.id] === "string") fields[field.id] = values[field.id] as string;
+  }
+  return fields;
 }

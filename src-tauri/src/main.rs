@@ -33,6 +33,7 @@ fn main() {
             app::sync_glm,
             app::sync_online_provider,
             app::delete_provider,
+            app::load_provider_credential,
             app::list_provider_instances,
             app::load_cached_snapshots,
             app::load_daily_usage

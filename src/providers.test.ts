@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  INSTANCE_REMARK_MAX_LENGTH,
+  deserializeProviderCredential,
   hasConfiguredInstance,
+  instanceBadgeLabel,
+  instanceDisplayName,
   nextInstanceId,
   providerDefinition,
   providerDefinitions,
+  sanitizeInstanceRemark,
   serializeProviderCredential,
 } from "./providers";
 
@@ -55,6 +60,32 @@ describe("provider catalog", () => {
     expect(nextInstanceId("kimi_cn", new Set(["kimi_cn_2"]))).toBe("kimi_cn_3");
     expect(nextInstanceId("glm", new Set(["glm_2", "glm_10"]))).toBe("glm_11");
     expect(nextInstanceId("glm", new Set(["kimi_cn_2"]))).toBe("glm");
+  });
+});
+
+describe("instance remarks", () => {
+  it("sanitizes remark input into a compact single-line label", () => {
+    expect(sanitizeInstanceRemark("  工作账号  ")).toBe("工作账号");
+    expect(sanitizeInstanceRemark("工作\n\t 账号")).toBe("工作 账号");
+    expect(sanitizeInstanceRemark("工作　账号")).toBe("工作 账号");
+    expect(sanitizeInstanceRemark("   ")).toBe("");
+    expect(sanitizeInstanceRemark("x".repeat(64))).toHaveLength(INSTANCE_REMARK_MAX_LENGTH);
+  });
+
+  it("prefers the remark for the instance badge", () => {
+    expect(instanceBadgeLabel(3, "工作号")).toBe("工作号");
+    expect(instanceBadgeLabel(1, "工作号")).toBe("工作号");
+    expect(instanceBadgeLabel(3, "")).toBe("实例 3");
+    expect(instanceBadgeLabel(1, "")).toBe("");
+  });
+
+  it("appends the remark to the full display name", () => {
+    const kimi = providerDefinition("kimi_cn") ?? providerDefinitions[0]!;
+
+    expect(instanceDisplayName(kimi, 1, "工作号")).toBe("Kimi Code · 工作号");
+    expect(instanceDisplayName(kimi, 2, "工作号")).toBe("Kimi Code · 工作号");
+    expect(instanceDisplayName(kimi, 2, "")).toBe("Kimi Code · 实例 2");
+    expect(instanceDisplayName(kimi, 1, "")).toBe("Kimi Code");
   });
 });
 
@@ -129,5 +160,32 @@ describe("provider credentials", () => {
     expect(() => serializeProviderCredential("gemini", { projectId: "sample-project" })).toThrow(
       "请填写所有必填项",
     );
+  });
+
+  it("round-trips stored credentials back into dialog field values", () => {
+    expect(deserializeProviderCredential("minimax_cn_2", "sk-cp-test")).toEqual({
+      apiKey: "sk-cp-test",
+    });
+
+    const stored = serializeProviderCredential("qwen_cn", {
+      endpoint: "https://example.aliyuncs.com",
+      accessKeyId: "LTAI-test",
+      accessKeySecret: "secret-test",
+    });
+    expect(deserializeProviderCredential("qwen_cn", stored)).toEqual({
+      endpoint: "https://example.aliyuncs.com",
+      accessKeyId: "LTAI-test",
+      accessKeySecret: "secret-test",
+    });
+  });
+
+  it("tolerates blank, corrupt, or partial stored credentials", () => {
+    expect(deserializeProviderCredential("gemini", "")).toEqual({});
+    expect(deserializeProviderCredential("gemini", "  ")).toEqual({});
+    expect(deserializeProviderCredential("gemini", "{oops")).toEqual({});
+    expect(deserializeProviderCredential("gemini", JSON.stringify({ projectId: "p" }))).toEqual({
+      projectId: "p",
+    });
+    expect(deserializeProviderCredential("unknown_x", "abc")).toEqual({});
   });
 });

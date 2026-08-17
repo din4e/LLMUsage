@@ -522,6 +522,27 @@ pub async fn sync_online_provider(
     Ok(snapshot)
 }
 
+/// Returns the decrypted credential for an already-configured instance so the
+/// edit dialog can prefill (and reveal) the previously saved values.
+#[tauri::command(rename_all = "camelCase")]
+pub fn load_provider_credential(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<String, CommandError> {
+    // Same instance-id dispatch as delete_provider: GLM ids plus online ids.
+    let instance_id = if provider_id == "glm" || provider_id.starts_with("glm_") {
+        glm_instance(&provider_id)?
+    } else {
+        online_instance(&provider_id)?.id
+    };
+    provider_vault(&app, &instance_id)?
+        .load()
+        .map_err(|error| match error {
+            SecretError::Missing => CommandError::not_configured(),
+            _ => CommandError::credential(),
+        })
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub fn delete_provider(app: tauri::AppHandle, provider_id: String) -> Result<(), CommandError> {
     // 1. Remove the stored credential. Forgetting a provider is idempotent:

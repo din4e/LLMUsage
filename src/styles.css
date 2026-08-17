@@ -195,7 +195,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   color: var(--accent);
 }
 .nav-item.active { box-shadow: inset 2px 0 var(--accent); }
-.about-link { margin-top: auto; }
+.about-link { margin-top: 5px; }
 .theme-button { margin-top: 5px; }
 
 main { width: min(1240px, 100%); margin: 0 auto; padding: 12px 18px 18px; }
@@ -212,21 +212,44 @@ main { width: min(1240px, 100%); margin: 0 auto; padding: 12px 18px 18px; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: clamp(24px, 2.5vw, 30px); line-height: 1; letter-spacing: -.045em; font-weight: 680; }
 h2 { margin-bottom: 0; font-size: 19px; line-height: 1.15; letter-spacing: -.025em; }
-.topbar-actions { display: flex; align-items: center; gap: 8px; }
-.sync-status { color: var(--muted); font-size: 14px; white-space: nowrap; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Sync status lives in the rail as a bare dot; the message stays available
+   through its hover tooltip (set from setStatus). */
+/* The sync cluster (status, auto-sync, refresh) docks to the rail bottom
+   above the about/theme buttons instead of sitting under the nav. */
+.rail > .sync-status { display: grid; place-items: center; width: 32px; height: 32px; margin-top: auto; font-size: 0; }
 .sync-status i {
   display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 10px var(--accent);
 }
 .sync-status.syncing i { animation: pulse 1s infinite; }
 .sync-status.error i { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
-.auto-sync-control { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted); font-size: 14px; }
-.auto-sync-control span { margin: 0; color: var(--muted); font-size: 14px; }
+.rail-menu-host { position: relative; display: grid; place-items: center; width: 32px; height: 32px; margin-top: 5px; }
+.rail-menu {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 60;
+  display: grid;
+  gap: 2px;
+  min-width: 112px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 14px 44px rgb(0 0 0 / 45%);
+  transform: translateY(-50%);
+}
+.rail-menu button { display: block; min-height: 28px; padding: 4px 12px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 13px; text-align: left; cursor: pointer; }
+.rail-menu button:hover { background: var(--surface-hover); color: var(--text); }
+.rail-menu button.active { background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); color: var(--accent); }
+.nav-item.auto-sync-button.on { color: var(--accent); }
+.nav-item.sync-button { margin-top: 5px; font-size: 17px; }
+.nav-item.sync-button.working { animation: spin 1s linear infinite; pointer-events: none; }
 select {
   min-height: 32px;
   padding: 5px 24px 5px 8px;
@@ -239,6 +262,7 @@ select {
 }
 select:hover { border-color: var(--line-strong); }
 .refresh-button {
+  flex-shrink: 0;
   min-height: 32px;
   padding: 5px 12px;
   border: 1px solid var(--accent-strong);
@@ -255,24 +279,26 @@ select:hover { border-color: var(--line-strong); }
 .refresh-button:hover { filter: brightness(1.08); }
 .refresh-button:disabled { cursor: wait; opacity: .65; }
 
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .metric-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 0; border-radius: 8px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
-.metric-strip article { position: relative; min-height: 46px; padding: 6px 12px 5px; overflow: hidden; }
-.metric-strip span { display: inline; margin: 0 8px 0 0; color: var(--muted); font-size: 12px; }
+.metric-strip article { position: relative; min-height: 34px; padding: 4px 10px 3px; overflow: hidden; }
+.metric-strip span { display: inline; margin: 0 7px 0 0; color: var(--muted); font-size: 12px; }
 .metric-strip strong {
   display: inline;
   color: var(--text);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: clamp(20px, 2vw, 24px);
+  font-size: clamp(16px, 1.7vw, 19px);
   font-weight: 560;
   line-height: 1;
-  letter-spacing: -.055em;
+  letter-spacing: -.05em;
   font-variant-numeric: tabular-nums;
 }
 .metric-strip small { color: var(--muted); font-size: 12px; line-height: 1.25; }
 .metric-strip .coverage strong { color: var(--warm); }
 
 .trend-panel { margin-top: 10px; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
-.trend-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 9px 12px 4px; }
+.trend-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 12px 4px; }
 .trend-controls { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .trend-controls > label { margin: 0 1px 0 0; font-size: 13px; }
 .range-switch { display: flex; border: 1px solid var(--line); }
@@ -280,16 +306,19 @@ select:hover { border-color: var(--line-strong); }
 .range-switch button:last-child { border-right: 0; }
 .range-switch button:hover { color: var(--text); background: var(--surface-hover); }
 .range-switch button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
-.trend-chart-wrap { position: relative; min-height: 190px; padding: 3px 8px 0; }
-.trend-chart { display: block; width: 100%; min-height: 190px; overflow: visible; }
+.trend-chart-wrap { position: relative; min-height: 148px; padding: 2px 8px 0; }
+.trend-chart { display: block; width: 100%; min-height: 148px; overflow: visible; }
 .trend-grid-line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .trend-axis-label { fill: var(--muted); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 12px; }
 .trend-date-label { font-size: 12px; }
+.trend-area { fill: url(#trend-area-fill); }
+.trend-point.latest { fill: var(--accent-strong); }
+.trend-value-label { fill: var(--text); font-weight: 600; }
 .trend-line { fill: none; stroke: var(--accent-strong); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 36%, transparent)); }
 .trend-point { fill: var(--surface); stroke: var(--signal); stroke-width: 2.5; cursor: help; vector-effect: non-scaling-stroke; }
 .trend-point:hover, .trend-point:focus { fill: var(--accent); stroke: var(--text); outline: none; }
 .trend-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 20px; color: var(--muted); font-size: 13px; text-align: center; }
-.trend-description { margin: 0; padding: 0 12px 7px; color: var(--muted); font-size: 13px; }
+.trend-description { margin: 0; padding: 0 12px 4px; color: var(--muted); font-size: 13px; }
 
 .section-heading { display: flex; justify-content: space-between; align-items: end; margin: 10px 0 4px; }
 .section-heading > p { margin: 0; color: var(--muted); font-size: 14px; }
@@ -444,6 +473,10 @@ dialog form { padding: 18px; }
 .dialog-copy { margin-bottom: 12px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .close-button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; }
 .close-button:hover { border-color: var(--line); color: var(--accent); }
+.credential-field { position: relative; }
+.credential-field input.has-reveal { padding-right: 58px; }
+.credential-toggle { position: absolute; right: 7px; bottom: 7px; min-height: 24px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 2px; background: var(--surface); color: var(--muted); font-size: 12px; cursor: pointer; }
+.credential-toggle:hover { border-color: var(--line-strong); color: var(--text); }
 label { display: block; margin: 9px 0 4px; color: var(--muted); font-size: 13px; }
 input { width: 100%; min-height: 38px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 2px; outline: none; background: var(--surface); color: inherit; font-size: 14px; }
 input:hover { border-color: var(--line-strong); }
@@ -482,15 +515,16 @@ input:hover { border-color: var(--line-strong); }
   main { padding: 11px 9px 18px; }
   .topbar { align-items: flex-start; margin-bottom: 10px; }
   .topbar-actions { flex-direction: column-reverse; align-items: flex-end; gap: 5px; }
-  .sync-status { display: none; }
-  .auto-sync-control span { display: none; }
+  .rail > .sync-status { margin: 0 0 0 4px; }
+  .rail-menu-host, .nav-item.sync-button { margin: 0 0 0 4px; }
+  .rail-menu { left: 0; top: calc(100% + 6px); transform: none; }
   h1 { font-size: 28px; }
   .metric-strip article { min-height: 52px; padding: 6px 10px 5px; }
   .metric-strip strong { font-size: 20px; }
   .trend-heading { flex-direction: column; align-items: stretch; }
   .trend-controls { flex-wrap: wrap; justify-content: space-between; width: 100%; }
   .trend-controls > label { display: none; }
-  .trend-chart-wrap, .trend-chart { min-height: 190px; }
+  .trend-chart-wrap, .trend-chart { min-height: 148px; }
   .range-switch { order: 2; }
   .section-heading > p { display: none; }
   .provider-row { gap: 3px 8px; padding: 6px 8px 6px 2px; }
