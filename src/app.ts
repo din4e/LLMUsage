@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { renderProviderDetails } from "./details";
 import {
   baseProviderId,
@@ -12,6 +13,7 @@ import {
   localDayRange,
   localDayRangeMs,
   localQuarterSlot,
+  selectBalanceTrend,
   selectDailyTrend,
   summarizeProviders,
   type DailyUsageRecord,
@@ -31,7 +33,7 @@ import {
   serializeProviderCredential,
 } from "./providers";
 import { initializeWindowControls } from "./window-controls";
-import { renderDailyTrendChart } from "./trend-chart";
+import { renderBalanceTrendChart, renderDailyTrendChart } from "./trend-chart";
 import "./styles.css";
 
 interface GlmSnapshot {
@@ -76,8 +78,8 @@ const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) 
 const refreshButton = byId<HTMLButtonElement>("refresh-button");
 const syncStatus = byId<HTMLElement>("sync-status");
 const themeButton = byId<HTMLButtonElement>("theme-toggle");
-const autoSyncToggle = byId<HTMLButtonElement>("auto-sync-toggle");
-const autoSyncMenu = byId<HTMLElement>("auto-sync-menu");
+const autostartToggle = byId<HTMLButtonElement>("autostart-toggle");
+const autoSyncOptions = byId<HTMLElement>("auto-sync-options");
 const dialog = byId<HTMLDialogElement>("provider-dialog");
 const providerForm = byId<HTMLFormElement>("provider-form");
 const dialogTitle = byId<HTMLElement>("dialog-title");
@@ -88,8 +90,13 @@ const catalogDialog = byId<HTMLDialogElement>("catalog-dialog");
 const providerCatalog = byId<HTMLElement>("provider-catalog");
 const providerList = byId<HTMLElement>("provider-list");
 const providerEmpty = byId<HTMLElement>("provider-empty");
+const pageProviderCatalog = byId<HTMLElement>("page-provider-catalog");
+const providerInstances = byId<HTMLElement>("provider-instances");
+const providerInstancesEmpty = byId<HTMLElement>("provider-instances-empty");
 const trendProvider = byId<HTMLSelectElement>("trend-provider");
 const trendRange = byId<HTMLElement>("trend-range");
+const trendMetric = byId<HTMLElement>("trend-metric");
+const trendTitle = byId<HTMLElement>("trend-title");
 const trendChart = document.getElementById("trend-chart") as SVGSVGElement | null;
 const trendEmpty = byId<HTMLElement>("trend-empty");
 const trendDescription = byId<HTMLElement>("trend-description");
@@ -116,16 +123,24 @@ let autoSyncTimer: number | null = null;
 let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
+let selectedTrendMetric: "tokens" | "balance" = "tokens";
 const APP_VERSION_FALLBACK = "0.1.4";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
   const selected = trendProvider.value || "all";
-  const providerIds = new Set([
-    ...Array.from(configuredInstanceIds, baseProviderId),
-    ...dailyUsageRecords.map((record) => baseProviderId(record.providerId)),
-  ]);
-  const options = [new Option("全部提供商", "all")];
+  // Balance mode only offers providers whose history actually carries a
+  // balance sample; token mode keeps the full configured/history list.
+  const recordProviderIds = new Set(dailyUsageRecords.map((record) => baseProviderId(record.providerId)));
+  const balanceProviderIds = new Set(
+    dailyUsageRecords
+      .filter((record) => record.balanceCny != null)
+      .map((record) => baseProviderId(record.providerId)),
+  );
+  const providerIds = selectedTrendMetric === "balance"
+    ? balanceProviderIds
+    : new Set([...Array.from(configuredInstanceIds, baseProviderId), ...recordProviderIds]);
+  const options = [new Option(selectedTrendMetric === "balance" ? "合计余额" : "全部提供商", "all")];
   for (const provider of providerDefinitions) {
     if (providerIds.has(provider.id)) options.push(new Option(provider.name, provider.id));
   }
@@ -139,8 +154,26 @@ function renderTrend() {
   const records = providerId === "all"
     ? dailyUsageRecords
     : dailyUsageRecords.filter((record) => isProviderInstanceId(record.providerId, providerId));
+  const selectedName = providerId === "all"
+    ? selectedTrendMetric === "balance" ? "合计余额" : "全部提供商"
+    : providerName(providerId);
+  if (trendTitle) {
+    trendTitle.textContent = selectedTrendMetric === "balance"
+      ? selectedTrendRange === "24h" ? "今日余额变化" : "每日余额变化"
+      : selectedTrendRange === "24h" ? "今日 Token 消耗" : "每日 Token 消耗";
+  }
+  if (selectedTrendMetric === "balance") {
+    renderBalanceTrendChart(
+      trendChart,
+      trendEmpty,
+      trendDescription,
+      selectBalanceTrend(records, selectedTrendRange, providerId),
+      selectedName,
+      selectedTrendRange === "24h",
+    );
+    return;
+  }
   const points = selectDailyTrend(records, selectedTrendRange, providerId);
-  const selectedName = providerId === "all" ? "全部提供商" : providerName(providerId);
   renderDailyTrendChart(trendChart, trendEmpty, trendDescription, points, selectedName, selectedTrendRange === "24h");
 }
 
@@ -157,13 +190,17 @@ async function loadDailyUsage() {
 }
 
 function ensureProviderRow(instanceId: string): HTMLElement | null {
-  const existing = providerList?.querySelector<HTMLElement>(
+  // The dashboard list and the providers page each keep their own copy of the
+  // row; both are created together so renders never see a half-updated view.
+  for (const container of [providerList, providerInstances]) {
+    if (!container) continue;
+    if (!container.querySelector(`.provider-row[data-provider="${instanceId}"]`)) {
+      container.append(createProviderRow(instanceId) ?? document.createComment("unknown provider"));
+    }
+  }
+  return providerList?.querySelector<HTMLElement>(
     `.provider-row[data-provider="${instanceId}"]`,
-  );
-  if (existing) return existing;
-  const row = createProviderRow(instanceId);
-  if (row) providerList?.append(row);
-  return row;
+  ) ?? null;
 }
 
 function createProviderRow(instanceId: string): HTMLElement | null {
@@ -199,27 +236,27 @@ function createProviderRow(instanceId: string): HTMLElement | null {
   const usageLabel = document.createElement("span");
   usageLabel.textContent = isGlm ? "今日 Token" : "在线摘要";
   const usageValue = document.createElement("strong");
-  usageValue.id = isGlm ? `${instanceId}-tokens` : `${instanceId}-primary`;
+  usageValue.className = "usage-value";
   usageValue.textContent = "等待同步";
   const usageHint = document.createElement("small");
-  usageHint.id = isGlm ? `${instanceId}-requests` : `${instanceId}-secondary`;
+  usageHint.className = "usage-hint";
   usageHint.textContent = "已保存凭据";
   usage.append(usageLabel, usageValue, usageHint);
 
   const quota = document.createElement("div");
   quota.className = "quota-cell";
   const quotaLabel = document.createElement("span");
-  quotaLabel.id = isGlm ? "" : `${instanceId}-quota-label`;
+  quotaLabel.className = "quota-label";
   quotaLabel.textContent = isGlm ? "窗口" : "在线口径";
   const quotaValue = document.createElement("b");
-  quotaValue.id = isGlm ? `${instanceId}-percent` : `${instanceId}-quota-value`;
+  quotaValue.className = "quota-value";
   quotaValue.textContent = "—";
   const progress = document.createElement("progress");
-  progress.id = `${instanceId}-progress`;
+  progress.className = "quota-progress";
   progress.max = 100;
   progress.value = 0;
   const quotaHint = document.createElement("small");
-  quotaHint.id = isGlm ? `${instanceId}-cooldown` : `${instanceId}-quota-hint`;
+  quotaHint.className = "quota-hint";
   quotaHint.textContent = isGlm ? "重置时间未知" : "等待在线返回";
   quota.append(quotaLabel, quotaValue, progress, quotaHint);
 
@@ -250,15 +287,22 @@ function createProviderRow(instanceId: string): HTMLElement | null {
 
   const details = document.createElement("div");
   details.className = "provider-details";
-  details.id = `${instanceId}-details`;
   details.hidden = true;
   row.append(handle, identity, usage, quota, actions, details);
   applyRowIdentity(row, instanceId);
   return row;
 }
 
-/** Writes the provider name, instance badge, and identity aria-labels onto a row.
- *  Called at row creation and again after a remark change. */
+/** Every rendered copy of an instance row: the dashboard list and the
+ *  providers page render the same structure and update in lockstep. */
+function providerRows(instanceId: string): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(`.provider-row[data-provider="${instanceId}"]`),
+  );
+}
+
+/** Writes the provider name, instance badge, and identity aria-labels onto
+ *  every rendered copy of the row. Called at creation and after renames. */
 function applyRowIdentity(row: HTMLElement, instanceId: string) {
   const provider = providerDefinition(instanceId);
   if (!provider) return;
@@ -294,6 +338,10 @@ function applyRowIdentity(row: HTMLElement, instanceId: string) {
   );
 }
 
+function applyInstanceIdentities(instanceId: string) {
+  for (const row of providerRows(instanceId)) applyRowIdentity(row, instanceId);
+}
+
 /** Wires drag-to-reorder plus an Alt+arrow keyboard equivalent onto a row. */
 function attachRowDragging(row: HTMLElement, handle: HTMLElement) {
   const releaseDraggable = () => {
@@ -319,7 +367,7 @@ function attachRowDragging(row: HTMLElement, handle: HTMLElement) {
     row.draggable = false;
     row.classList.remove("dragging");
     clearDropIndicators();
-    if (dragSourceRow === row) persistInstanceOrder();
+    if (dragSourceRow === row) persistInstanceOrder(row.parentElement);
     dragSourceRow = null;
   });
   row.addEventListener("dragover", (event) => {
@@ -339,7 +387,7 @@ function attachRowDragging(row: HTMLElement, handle: HTMLElement) {
     if (dropIsAfter(row, event)) row.after(dragSourceRow);
     else row.before(dragSourceRow);
     clearDropIndicators();
-    persistInstanceOrder();
+    persistInstanceOrder(row.parentElement);
   });
   handle.addEventListener("keydown", (event) => {
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
@@ -349,7 +397,7 @@ function attachRowDragging(row: HTMLElement, handle: HTMLElement) {
     if (!(sibling instanceof HTMLElement)) return;
     if (up) sibling.before(row);
     else sibling.after(row);
-    persistInstanceOrder();
+    persistInstanceOrder(row.parentElement);
     (handle as HTMLElement).focus();
   });
 }
@@ -377,19 +425,22 @@ function loadSavedInstanceOrder(): string[] {
   }
 }
 
-function persistInstanceOrder() {
-  const order = rowInstanceIds();
+/** Persists the drag order from the container the reorder happened in, then
+ *  re-sorts the other container's copy so both stay in lockstep. */
+function persistInstanceOrder(source?: ParentNode | null) {
+  const order = rowInstanceIds(source ?? providerList ?? document);
   savedInstanceOrder.splice(0, savedInstanceOrder.length, ...order);
   try {
     window.localStorage.setItem(PROVIDER_ORDER_KEY, JSON.stringify(order));
   } catch {
     // Ordering is a convenience; ignore storage failures.
   }
+  sortProviderRows();
 }
 
-function rowInstanceIds(): string[] {
+function rowInstanceIds(container: ParentNode = document): string[] {
   return Array.from(
-    providerList?.querySelectorAll<HTMLElement>(".provider-row") ?? [],
+    container.querySelectorAll<HTMLElement>(".provider-row"),
     (row) => row.dataset.provider ?? "",
   ).filter(Boolean);
 }
@@ -438,15 +489,18 @@ function instanceOrderKey(instanceId: string): [number, number, number] {
 }
 
 function sortProviderRows() {
-  const rows = Array.from(providerList?.querySelectorAll<HTMLElement>(".provider-row") ?? []);
-  rows.sort((left, right) => {
-    const leftKey = instanceOrderKey(left.dataset.provider ?? "");
-    const rightKey = instanceOrderKey(right.dataset.provider ?? "");
-    return (
-      leftKey[0] - rightKey[0] || leftKey[1] - rightKey[1] || leftKey[2] - rightKey[2]
-    );
-  });
-  for (const row of rows) providerList?.append(row);
+  for (const container of [providerList, providerInstances]) {
+    if (!container) continue;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>(".provider-row"));
+    rows.sort((left, right) => {
+      const leftKey = instanceOrderKey(left.dataset.provider ?? "");
+      const rightKey = instanceOrderKey(right.dataset.provider ?? "");
+      return (
+        leftKey[0] - rightKey[0] || leftKey[1] - rightKey[1] || leftKey[2] - rightKey[2]
+      );
+    });
+    for (const row of rows) container.append(row);
+  }
 }
 
 function setInstanceConfigured(instanceId: string) {
@@ -461,19 +515,20 @@ function configuredBaseIds(): Set<string> {
 function renderProviderVisibility() {
   for (const instanceId of configuredInstanceIds) ensureProviderRow(instanceId);
   sortProviderRows();
-  for (const row of providerList?.querySelectorAll<HTMLElement>(".provider-row") ?? []) {
+  for (const row of document.querySelectorAll<HTMLElement>(".provider-row")) {
     row.hidden = !configuredInstanceIds.has(row.dataset.provider ?? "");
   }
   if (providerEmpty) providerEmpty.hidden = configuredInstanceIds.size > 0;
+  if (providerInstancesEmpty) providerInstancesEmpty.hidden = configuredInstanceIds.size > 0;
+  setText("providers-configured-count", String(configuredInstanceIds.size));
   renderProviderCatalog();
   renderTrendProviderOptions();
   renderTotals();
 }
 
-function renderProviderCatalog() {
-  if (!providerCatalog) return;
-  providerCatalog.replaceChildren();
-  for (const provider of providerDefinitions) {
+/** Catalog entries shared by the dialog and the providers page. */
+function buildCatalogButtons(): HTMLButtonElement[] {
+  return providerDefinitions.map((provider) => {
     const configured = hasConfiguredInstance(provider.id, configuredInstanceIds);
     const button = document.createElement("button");
     button.type = "button";
@@ -493,8 +548,14 @@ function renderProviderCatalog() {
     copy.className = "catalog-copy";
     copy.append(name, subtitle);
     button.append(mark, copy);
-    providerCatalog.append(button);
-  }
+    return button;
+  });
+}
+
+function renderProviderCatalog() {
+  const buttons = buildCatalogButtons();
+  providerCatalog?.replaceChildren(...buttons);
+  pageProviderCatalog?.replaceChildren(...buildCatalogButtons());
 }
 
 function setStatus(message: string, state: "ready" | "syncing" | "error" = "ready") {
@@ -510,26 +571,23 @@ function setStatus(message: string, state: "ready" | "syncing" | "error" = "read
   else syncStatus.removeAttribute("title");
 }
 
-type ViewId = "dashboard" | "about";
+type ViewId = "dashboard" | "providers" | "about";
 
-function routeFromHash(hash: string): { view: ViewId; anchor: string | null } {
-  if (hash === "about") return { view: "about", anchor: null };
-  if (hash === "providers") return { view: "dashboard", anchor: "providers" };
-  return { view: "dashboard", anchor: null };
+function routeFromHash(hash: string): { view: ViewId } {
+  if (hash === "about") return { view: "about" };
+  if (hash === "providers") return { view: "providers" };
+  return { view: "dashboard" };
 }
 
 function applyRoute() {
   const hash = window.location.hash.slice(1);
-  const { view, anchor } = routeFromHash(hash);
+  const { view } = routeFromHash(hash);
   byId("dashboard")?.toggleAttribute("hidden", view !== "dashboard");
+  byId("providers")?.toggleAttribute("hidden", view !== "providers");
   byId("about")?.toggleAttribute("hidden", view !== "about");
   updateNavActive(hash || "dashboard");
-  if (anchor) {
-    requestAnimationFrame(() => byId(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" }));
-  } else {
-    const root = view === "about" ? byId("about") : byId("dashboard");
-    root?.scrollTo({ top: 0 });
-  }
+  const root = byId(view);
+  root?.scrollTo({ top: 0 });
 }
 
 function updateNavActive(hash: string) {
@@ -558,11 +616,16 @@ async function populateAboutMetadata() {
 function renderGlm(instanceId: string, snapshot: GlmSnapshot) {
   setInstanceConfigured(instanceId);
   glmSnapshots.set(instanceId, snapshot);
-  setText(`${instanceId}-tokens`, formatInteger(snapshot.totalTokens));
-  setText(`${instanceId}-requests`, `${formatInteger(snapshot.requests)} 次调用 · ${snapshot.planLevel}`);
-  setText(`${instanceId}-percent`, `${snapshot.usedPercent.toFixed(1)}%`);
-  const progress = byId<HTMLProgressElement>(`${instanceId}-progress`);
-  if (progress) progress.value = snapshot.usedPercent;
+  for (const row of providerRows(instanceId)) {
+    const value = row.querySelector<HTMLElement>(".usage-value");
+    if (value) value.textContent = formatInteger(snapshot.totalTokens);
+    const hint = row.querySelector<HTMLElement>(".usage-hint");
+    if (hint) hint.textContent = `${formatInteger(snapshot.requests)} 次调用 · ${snapshot.planLevel}`;
+    const percent = row.querySelector<HTMLElement>(".quota-value");
+    if (percent) percent.textContent = `${snapshot.usedPercent.toFixed(1)}%`;
+    const progress = row.querySelector<HTMLProgressElement>(".quota-progress");
+    if (progress) progress.value = snapshot.usedPercent;
+  }
   renderProviderDetails(instanceId, snapshot.detailSections);
   updateCooldown();
   renderTotals();
@@ -571,28 +634,30 @@ function renderGlm(instanceId: string, snapshot: GlmSnapshot) {
 function renderOnline(snapshot: OnlineSnapshot) {
   setInstanceConfigured(snapshot.providerId);
   onlineSnapshots.set(snapshot.providerId, snapshot);
-  const primary = byId<HTMLElement>(`${snapshot.providerId}-primary`);
-  const secondary = byId<HTMLElement>(`${snapshot.providerId}-secondary`);
-  const quotaLabel = byId<HTMLElement>(`${snapshot.providerId}-quota-label`);
-  const quotaValue = byId<HTMLElement>(`${snapshot.providerId}-quota-value`);
-  const quotaHint = byId<HTMLElement>(`${snapshot.providerId}-quota-hint`);
-  const progress = byId<HTMLProgressElement>(`${snapshot.providerId}-progress`);
-  if (primary) primary.textContent = snapshot.primaryValue;
-  if (secondary) secondary.textContent = snapshot.secondaryValue;
-  if (quotaLabel) quotaLabel.textContent = snapshot.primaryLabel;
-  if (quotaValue) {
-    quotaValue.textContent = snapshot.quotaUsedPercent == null
-      ? "在线余额"
-      : `${snapshot.quotaUsedPercent.toFixed(1)}%`;
-  }
-  if (quotaHint) {
-    quotaHint.textContent = snapshot.cooldownEndsAtMs
-      ? formatCooldown(snapshot.cooldownEndsAtMs)
-      : sourceLabel(snapshot);
-  }
-  if (progress) {
-    progress.hidden = snapshot.quotaUsedPercent == null;
-    if (snapshot.quotaUsedPercent != null) progress.value = snapshot.quotaUsedPercent;
+  for (const row of providerRows(snapshot.providerId)) {
+    const primary = row.querySelector<HTMLElement>(".usage-value");
+    const secondary = row.querySelector<HTMLElement>(".usage-hint");
+    const quotaLabel = row.querySelector<HTMLElement>(".quota-label");
+    const quotaValue = row.querySelector<HTMLElement>(".quota-value");
+    const quotaHint = row.querySelector<HTMLElement>(".quota-hint");
+    const progress = row.querySelector<HTMLProgressElement>(".quota-progress");
+    if (primary) primary.textContent = snapshot.primaryValue;
+    if (secondary) secondary.textContent = snapshot.secondaryValue;
+    if (quotaLabel) quotaLabel.textContent = snapshot.primaryLabel;
+    if (quotaValue) {
+      quotaValue.textContent = snapshot.quotaUsedPercent == null
+        ? "在线余额"
+        : `${snapshot.quotaUsedPercent.toFixed(1)}%`;
+    }
+    if (quotaHint) {
+      quotaHint.textContent = snapshot.cooldownEndsAtMs
+        ? formatCooldown(snapshot.cooldownEndsAtMs)
+        : sourceLabel(snapshot);
+    }
+    if (progress) {
+      progress.hidden = snapshot.quotaUsedPercent == null;
+      if (snapshot.quotaUsedPercent != null) progress.value = snapshot.quotaUsedPercent;
+    }
   }
   renderProviderDetails(snapshot.providerId, snapshot.detailSections);
   renderTotals();
@@ -643,7 +708,10 @@ function renderTotals() {
 
 function updateCooldown() {
   for (const [instanceId, snapshot] of glmSnapshots) {
-    setText(`${instanceId}-cooldown`, formatCooldown(snapshot.cooldownEndsAtMs));
+    for (const row of providerRows(instanceId)) {
+      const hint = row.querySelector<HTMLElement>(".quota-hint");
+      if (hint) hint.textContent = formatCooldown(snapshot.cooldownEndsAtMs);
+    }
   }
 }
 
@@ -687,8 +755,9 @@ async function syncOnline(instanceId: string): Promise<boolean> {
 }
 
 function orderedConfiguredInstances(): string[] {
-  // Sync in the visual (drag-ordered) sequence when rows exist.
-  const visualOrder = rowInstanceIds().filter((instanceId) =>
+  // Sync in the visual (drag-ordered) sequence when rows exist. Read the
+  // dashboard list only — the providers page renders a second copy of each row.
+  const visualOrder = rowInstanceIds(providerList ?? document).filter((instanceId) =>
     configuredInstanceIds.has(instanceId),
   );
   if (visualOrder.length === configuredInstanceIds.size) return visualOrder;
@@ -793,20 +862,11 @@ function autoSyncLabel(seconds: number): string {
   return seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`;
 }
 
-/** Reflects the chosen interval on the rail toggle and its flyout menu. */
-function updateAutoSyncMenu(seconds: number) {
-  for (const item of autoSyncMenu?.querySelectorAll<HTMLButtonElement>("button[data-seconds]") ?? []) {
-    const active = Number(item.dataset.seconds) === seconds;
-    item.classList.toggle("active", active);
-    item.setAttribute("aria-pressed", String(active));
+/** Reflects the chosen interval on the about-page segmented control. */
+function updateAutoSyncOptions(seconds: number) {
+  for (const item of autoSyncOptions?.querySelectorAll<HTMLButtonElement>("button[data-seconds]") ?? []) {
+    item.setAttribute("aria-pressed", String(Number(item.dataset.seconds) === seconds));
   }
-  autoSyncToggle?.classList.toggle("on", seconds > 0);
-  if (autoSyncToggle) autoSyncToggle.title = `自动拉取：${autoSyncLabel(seconds)}`;
-}
-
-function setAutoSyncMenu(open: boolean) {
-  if (autoSyncMenu) autoSyncMenu.hidden = !open;
-  autoSyncToggle?.setAttribute("aria-expanded", String(open));
 }
 
 refreshButton?.addEventListener("click", async () => {
@@ -822,10 +882,48 @@ themeButton?.addEventListener("click", () => {
   themeButton.setAttribute("aria-label", light ? "切换深色主题" : "切换浅色主题");
 });
 
+/** Reflects the boot-start registration on the about-page switch. */
+function updateAutostartToggle(enabled: boolean) {
+  autostartToggle?.setAttribute("aria-checked", String(enabled));
+  autostartToggle?.closest(".setting-row")?.classList.toggle("enabled", enabled);
+  if (autostartToggle) autostartToggle.title = `开机自启动：${enabled ? "开" : "关"}`;
+}
+
+/** Reads the OS registration once at startup so the toggle shows real state. */
+async function initAutostartToggle() {
+  if (!autostartToggle) return;
+  if (!isTauri()) {
+    autostartToggle.disabled = true;
+    autostartToggle.title = "开机自启动仅桌面可用";
+    return;
+  }
+  try {
+    updateAutostartToggle(await isAutostartEnabled());
+  } catch {
+    // Registry/keychain probe failed: leave it off rather than guess.
+    updateAutostartToggle(false);
+  }
+}
+
+autostartToggle?.addEventListener("click", async () => {
+  if (!isTauri() || autostartToggle.disabled) return;
+  autostartToggle.disabled = true;
+  try {
+    const target = !(await isAutostartEnabled());
+    if (target) await enableAutostart();
+    else await disableAutostart();
+    updateAutostartToggle(target);
+    setStatus(target ? "开机自启动已开启" : "开机自启动已关闭");
+  } catch (reason) {
+    const error = reason as CommandError;
+    setStatus(error.message ?? "开机自启动设置失败", "error");
+  } finally {
+    autostartToggle.disabled = false;
+  }
+});
+
 document.addEventListener("click", (event) => {
   const target = event.target as Element | null;
-  // Any click outside the flyout host closes the auto-sync menu.
-  if (!autoSyncMenu?.hidden && !target?.closest(".rail-menu-host")) setAutoSyncMenu(false);
   const button = target?.closest<HTMLButtonElement>("button[data-action]");
   if (!button) return;
   if (button.dataset.action === "close-provider-dialog") {
@@ -856,16 +954,11 @@ document.addEventListener("click", (event) => {
   if (button.dataset.action === "close-confirm-dialog") {
     confirmDialog?.close();
   }
-  if (button.dataset.action === "toggle-auto-sync") {
-    setAutoSyncMenu(autoSyncMenu?.hidden === true);
-    return;
-  }
   if (button.dataset.action === "set-auto-sync") {
     const seconds = Number(button.dataset.seconds ?? "0");
     window.localStorage.setItem("llm-usage:auto-sync-seconds", String(seconds));
     applyAutoSync(seconds);
-    updateAutoSyncMenu(seconds);
-    setAutoSyncMenu(false);
+    updateAutoSyncOptions(seconds);
     return;
   }
   if (button.dataset.action === "rename-provider") {
@@ -1026,9 +1119,7 @@ confirmForm?.addEventListener("submit", async (event) => {
     // not survive into a future instance of the same slot.
     instanceRemarks.delete(instanceId);
     persistInstanceRemarks();
-    providerList
-      ?.querySelector<HTMLElement>(`.provider-row[data-provider="${instanceId}"]`)
-      ?.remove();
+    for (const row of providerRows(instanceId)) row.remove();
     renderProviderVisibility();
     renderTotals();
     await loadDailyUsage();
@@ -1061,10 +1152,7 @@ renameForm?.addEventListener("submit", (event) => {
   if (remark) instanceRemarks.set(instanceId, remark);
   else instanceRemarks.delete(instanceId);
   persistInstanceRemarks();
-  const row = providerList?.querySelector<HTMLElement>(
-    `.provider-row[data-provider="${instanceId}"]`,
-  );
-  if (row) applyRowIdentity(row, instanceId);
+  applyInstanceIdentities(instanceId);
   renameDialog?.close();
 });
 
@@ -1072,6 +1160,16 @@ renameDialog?.addEventListener("close", () => {
   pendingRenameInstance = null;
 });
 trendProvider?.addEventListener("change", renderTrend);
+trendMetric?.addEventListener("click", (event) => {
+  const button = (event.target as Element).closest<HTMLButtonElement>("button[data-metric]");
+  if (!button) return;
+  selectedTrendMetric = button.dataset.metric as typeof selectedTrendMetric;
+  for (const item of trendMetric.querySelectorAll<HTMLButtonElement>("button[data-metric]")) {
+    item.setAttribute("aria-pressed", String(item === button));
+  }
+  renderTrendProviderOptions();
+  renderTrend();
+});
 trendRange?.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLButtonElement>("button[data-range]");
   if (!button) return;
@@ -1083,6 +1181,7 @@ trendRange?.addEventListener("click", (event) => {
 });
 window.setInterval(updateCooldown, 30_000);
 void initializeWindowControls();
+void initAutostartToggle();
 if (isTauri()) void listen("tray-sync", () => void syncAll());
 window.addEventListener("hashchange", applyRoute);
 applyRoute();
@@ -1090,7 +1189,7 @@ void populateAboutMetadata();
 void (async () => {
   const savedAutoSync = Number(window.localStorage.getItem("llm-usage:auto-sync-seconds") ?? "0");
   const autoSyncSeconds = Number.isFinite(savedAutoSync) ? savedAutoSync : 0;
-  updateAutoSyncMenu(autoSyncSeconds);
+  updateAutoSyncOptions(autoSyncSeconds);
   applyAutoSync(autoSyncSeconds);
   await loadProviderInstances();
   await loadCache();

@@ -36,15 +36,6 @@
           <a class="nav-item" href="#providers" aria-label="供应商设置">◇</a>
         </nav>
         <span class="sync-status" id="sync-status" role="status"><i></i> </span>
-        <div class="rail-menu-host">
-          <button class="nav-item auto-sync-button" id="auto-sync-toggle" type="button" data-action="toggle-auto-sync" aria-haspopup="true" aria-expanded="false" aria-label="自动拉取间隔" title="自动拉取：关闭">⏱</button>
-          <div class="rail-menu" id="auto-sync-menu" hidden>
-            <button type="button" data-action="set-auto-sync" data-seconds="0">关闭</button>
-            <button type="button" data-action="set-auto-sync" data-seconds="60">1 分钟</button>
-            <button type="button" data-action="set-auto-sync" data-seconds="300">5 分钟</button>
-            <button type="button" data-action="set-auto-sync" data-seconds="900">15 分钟</button>
-          </div>
-        </div>
         <button class="nav-item sync-button" id="refresh-button" type="button" aria-label="立即同步" title="立即同步">↻</button>
         <a class="nav-item about-link" href="#about" aria-label="关于">ⓘ</a>
         <button class="nav-item theme-button" id="theme-toggle" type="button" aria-label="切换深色主题">◐</button>
@@ -62,6 +53,10 @@
           <header class="trend-heading">
             <div><h2 id="trend-title">每日 Token 消耗</h2></div>
             <div class="trend-controls">
+              <div class="range-switch" id="trend-metric" aria-label="趋势指标">
+                <button type="button" data-metric="tokens" aria-pressed="true">Token 消耗</button>
+                <button type="button" data-metric="balance" aria-pressed="false">余额</button>
+              </div>
               <label for="trend-provider">提供商</label>
               <select id="trend-provider"><option value="all">全部提供商</option></select>
               <div class="range-switch" id="trend-range" aria-label="趋势时间范围">
@@ -89,10 +84,37 @@
           <div><strong>还没有已配置供应商</strong><span>添加后才会出现在主列表</span></div>
           <button class="row-action" type="button" data-action="open-catalog">添加供应商</button>
         </section>
-        <section class="more-providers" id="providers">
+        <section class="more-providers">
           <span id="catalog-summary">未配置供应商集中收纳，不占用仪表盘空间</span>
           <button class="row-action" type="button" data-action="open-catalog">＋ 添加供应商</button>
         </section>
+      </main>
+
+      <main id="providers" hidden>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">PROVIDERS</p>
+            <h1>供应商设置</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="about-version"><span id="providers-configured-count">0</span> 个已配置实例</span>
+          </div>
+        </header>
+
+        <section class="section-heading">
+          <h2>已配置实例</h2>
+          <p>展示与仪表盘一致 · 拖拽排序同步生效</p>
+        </section>
+        <section class="provider-list page-instances" id="provider-instances" aria-label="已配置实例"></section>
+        <section class="provider-empty" id="provider-instances-empty">
+          <div><strong>还没有已配置实例</strong><span>从下方目录添加第一个供应商</span></div>
+        </section>
+
+        <section class="section-heading">
+          <h2>供应商目录</h2>
+          <p>全部可查询供应商 · 已配置的供应商可继续添加多实例</p>
+        </section>
+        <section class="provider-catalog page-catalog" id="page-provider-catalog" aria-label="供应商目录"></section>
       </main>
 
       <main id="about" hidden>
@@ -106,28 +128,52 @@
           </div>
         </header>
 
-        <section class="about-card">
+        <section class="about-card about-unified">
           <p class="eyebrow">LOCAL · PRIVATE · LIVE</p>
           <h2>本地、私密、实时的 LLM 用量仪表盘</h2>
           <p class="about-copy">在一个桌面窗口里集中查看各家大模型供应商的今日用量、每日趋势、套餐额度、余额、成本估算与冷却时间。凭据仅保存在本机，按需直接请求供应商官方接口，不经过任何第三方服务器。</p>
-        </section>
 
-        <section class="about-grid" aria-label="应用信息">
-          <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.4</strong><small>由 Tauri 配置提供</small></article>
-          <article class="about-fact"><span>应用标识</span><strong>cn.ttpublic.llmusage</strong><small>Bundle Identifier</small></article>
-          <article class="about-fact"><span>技术栈</span><strong>Tauri 2 · Rust · TS</strong><small>原生壳 + Vite 前端</small></article>
-          <article class="about-fact"><span>供应商</span><strong id="about-provider-count">—</strong><small>可配置在线供应商</small></article>
-        </section>
+          <div class="about-grid" aria-label="应用信息">
+            <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.4</strong><small>由 Tauri 配置提供</small></article>
+            <article class="about-fact"><span>应用标识</span><strong>cn.ttpublic.llmusage</strong><small>Bundle Identifier</small></article>
+            <article class="about-fact"><span>技术栈</span><strong>Tauri 2 · Rust · TS</strong><small>原生壳 + Vite 前端</small></article>
+            <article class="about-fact"><span>供应商</span><strong id="about-provider-count">—</strong><small>可配置在线供应商</small></article>
+          </div>
 
-        <section class="about-card">
-          <p class="eyebrow">SECURITY</p>
-          <h2>隐私与安全</h2>
-          <ul class="about-list">
-            <li>密钥由 Windows DPAPI 加密保存，仅当前 Windows 用户可解密。</li>
-            <li>凭据不写入数据库或日志，仅在同步与你主动查看配置时解密。</li>
-            <li>每日用量以非敏感日汇总形式保存在本地，仅用于趋势图。</li>
-            <li>所有网络请求仅指向你配置的供应商域名，可在开发者工具中核对。</li>
-          </ul>
+          <div class="about-section">
+            <p class="eyebrow">SETTINGS</p>
+            <h3>通用设置</h3>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <span class="setting-title"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>自动拉取</span>
+                <span>按所选间隔自动同步全部已配置供应商</span>
+              </div>
+              <div class="range-switch auto-sync-options" id="auto-sync-options" role="group" aria-label="自动拉取间隔">
+                <button type="button" data-action="set-auto-sync" data-seconds="0" aria-pressed="true">关闭</button>
+                <button type="button" data-action="set-auto-sync" data-seconds="60" aria-pressed="false">1 分钟</button>
+                <button type="button" data-action="set-auto-sync" data-seconds="300" aria-pressed="false">5 分钟</button>
+                <button type="button" data-action="set-auto-sync" data-seconds="900" aria-pressed="false">15 分钟</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <span class="setting-title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" /><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" /><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" /><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" /></svg>开机自启动</span>
+                <span>开启后随系统登录自动启动 LLM Usage（Windows 注册表 / macOS LaunchAgent）</span>
+              </div>
+              <button type="button" id="autostart-toggle" class="setting-switch" role="switch" aria-checked="false" aria-label="开机自启动" title="开机自启动：关"></button>
+            </div>
+          </div>
+
+          <div class="about-section">
+            <p class="eyebrow">SECURITY</p>
+            <h3>隐私与安全</h3>
+            <ul class="about-list">
+              <li>密钥由 Windows DPAPI 加密保存，仅当前 Windows 用户可解密。</li>
+              <li>凭据不写入数据库或日志，仅在同步与你主动查看配置时解密。</li>
+              <li>每日用量以非敏感日汇总形式保存在本地，仅用于趋势图。</li>
+              <li>所有网络请求仅指向你配置的供应商域名，可在开发者工具中核对。</li>
+            </ul>
+          </div>
         </section>
       </main>
     </div>

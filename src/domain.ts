@@ -13,11 +13,21 @@ export interface DailyUsageRecord {
   requests: number | null;
   totalTokens: number | null;
   estimatedCostCny: number | null;
+  balanceCny?: number | null;
 }
 
 export interface DailyTrendPoint extends ProviderMetrics {
   date: string;
   label: string;
+}
+
+/** One sampled point on the balance curve: a stock value in ¥. */
+export interface BalanceTrendPoint {
+  date: string;
+  label: string;
+  balanceCny: number;
+  /** How many provider instances contributed to the sampled sum. */
+  providers: number;
 }
 
 export interface OnlineDetailSection {
@@ -156,6 +166,67 @@ export function selectDailyTrend(
   }))
     .filter((point) => point.totalTokens !== null)
     .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+/** Balance curve samples. Balances are stocks, not flows: each (date, slot,
+ *  provider) holds the balance at sync time, so a bucket's representative is
+ *  the provider's LAST KNOWN balance — never a sum over time. Providers sync
+ *  at different moments, so earlier buckets carry forward each provider's
+ *  last sample; "all" sums every carrying instance into 合计余额. */
+export function selectBalanceTrend(
+  records: DailyUsageRecord[],
+  range: TrendRange,
+  providerId: string,
+  today = new Date(),
+): BalanceTrendPoint[] {
+  const todayKey = localDateKey(today);
+  const inProvider = (record: DailyUsageRecord): boolean =>
+    providerId === "all" || isProviderInstanceId(record.providerId, providerId);
+
+  // bucket key = slot index (24h) or date string (daily); one sample per
+  // (bucket, provider), keeping the newest when keys collide.
+  const samples = new Map<string, { order: number; providers: Map<string, number> }>();
+  const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  cutoff.setDate(cutoff.getDate() - (range === "7d" ? 6 : 29));
+  const cutoffKey = localDateKey(cutoff);
+  for (const record of records) {
+    if (record.balanceCny == null || !inProvider(record)) continue;
+    let bucketKey: string;
+    let order: number;
+    if (range === "24h") {
+      if (record.date !== todayKey || record.slot == null) continue;
+      bucketKey = String(record.slot);
+      order = record.slot;
+    } else {
+      if (record.date > todayKey || (range !== "all" && record.date < cutoffKey)) continue;
+      bucketKey = record.date;
+      order = Number(record.date.replace(/-/g, ""));
+    }
+    const bucket = samples.get(bucketKey) ?? { order, providers: new Map<string, number>() };
+    bucket.providers.set(record.providerId, record.balanceCny);
+    samples.set(bucketKey, bucket);
+  }
+  if (!samples.size) return [];
+
+  // Walk buckets in time order, carrying each provider's last known balance
+  // forward, and emit the per-bucket sum of everything seen so far.
+  const carried = new Map<string, number>();
+  const points: BalanceTrendPoint[] = [];
+  const buckets = Array.from(samples.entries()).sort((left, right) => left[1].order - right[1].order);
+  for (const [bucketKey, { providers }] of buckets) {
+    for (const [instance, balance] of providers) carried.set(instance, balance);
+    let sum = 0;
+    for (const balance of carried.values()) sum += balance;
+    points.push({
+      date: range === "24h" ? todayKey : bucketKey,
+      label: range === "24h"
+        ? formatQuarterSlot(Number(bucketKey))
+        : bucketKey.slice(5).replace("-", "/"),
+      balanceCny: sum,
+      providers: carried.size,
+    });
+  }
+  return points;
 }
 
 export function formatCooldown(resetAtMs: number, nowMs = Date.now()): string {

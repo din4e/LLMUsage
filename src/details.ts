@@ -11,15 +11,25 @@ export function renderProviderDetails(
   providerId: string,
   sections: OnlineDetailSection[] | undefined,
 ) {
-  const root = document.getElementById(`${providerId}-details`);
-  if (!root) return;
-  const wasOpen = root.querySelector("details")?.open ?? false;
-  root.replaceChildren();
-  if (!sections?.length) {
-    root.hidden = true;
-    return;
-  }
+  // The same instance renders on the dashboard and the providers page, so
+  // every matching row's disclosure container is refreshed in lockstep.
+  const roots = document.querySelectorAll<HTMLElement>(
+    `.provider-row[data-provider="${providerId}"] .provider-details`,
+  );
+  if (!roots.length) return;
+  const wasOpen = roots[0]!.querySelector("details")?.open ?? false;
+  roots.forEach((root) => {
+    root.replaceChildren();
+    if (!sections?.length) {
+      root.hidden = true;
+      return;
+    }
+    root.append(buildDisclosure(sections, wasOpen));
+    root.hidden = false;
+  });
+}
 
+function buildDisclosure(sections: OnlineDetailSection[], wasOpen: boolean): HTMLElement {
   const details = document.createElement("details");
   details.className = "detail-disclosure";
   details.open = wasOpen;
@@ -41,8 +51,7 @@ export function renderProviderDetails(
     content.append(section);
   }
   details.append(summary, content);
-  root.append(details);
-  root.hidden = false;
+  return details;
 }
 
 function renderDetailEntry(entry: OnlineDetailEntry): HTMLElement {

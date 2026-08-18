@@ -17,6 +17,12 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }))
+        // Boot-start registration: Windows writes the HKCU Run key, macOS uses
+        // a LaunchAgent, Linux a .desktop autostart entry. Toggled from the rail.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             tray::setup(app.handle())?;
             Ok(())

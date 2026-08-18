@@ -381,6 +381,7 @@ pub async fn configure_glm(
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
             estimated_cost_cny: None,
+            balance_cny: None,
         },
     )?;
     Ok(snapshot)
@@ -422,6 +423,7 @@ pub async fn sync_glm(
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
             estimated_cost_cny: None,
+            balance_cny: None,
         },
     )?;
     Ok(snapshot)
@@ -471,6 +473,7 @@ pub async fn configure_online_provider(
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
             estimated_cost_cny: snapshot.estimated_cost_cny,
+            balance_cny: snapshot.balance_cny,
         },
     )?;
     Ok(snapshot)
@@ -517,6 +520,7 @@ pub async fn sync_online_provider(
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
             estimated_cost_cny: snapshot.estimated_cost_cny,
+            balance_cny: snapshot.balance_cny,
         },
     )?;
     Ok(snapshot)

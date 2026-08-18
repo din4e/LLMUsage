@@ -41,6 +41,10 @@ pub struct DailyUsageRecord {
     pub requests: Option<u64>,
     pub total_tokens: Option<u64>,
     pub estimated_cost_cny: Option<f64>,
+    /// Snapshot of the provider's remaining balance (¥) at sync time. A stock
+    /// value, not a flow: the day's latest sample is the closing balance.
+    #[serde(default)]
+    pub balance_cny: Option<f64>,
 }
 
 pub struct DailyUsageHistory {
@@ -195,6 +199,9 @@ fn is_valid_daily_record(record: &DailyUsageRecord) -> bool {
             .is_none_or(|slot| (0..=95).contains(&slot))
         && record
             .estimated_cost_cny
+            .is_none_or(|value| value.is_finite() && value >= 0.0)
+        && record
+            .balance_cny
             .is_none_or(|value| value.is_finite() && value >= 0.0)
 }
 
@@ -369,6 +376,7 @@ mod tests {
                 requests: Some(2),
                 total_tokens: Some(200),
                 estimated_cost_cny: None,
+                balance_cny: None,
             })
             .expect("save first observation");
         history
@@ -379,6 +387,7 @@ mod tests {
                 requests: Some(3),
                 total_tokens: Some(350),
                 estimated_cost_cny: None,
+                balance_cny: None,
             })
             .expect("replace same day observation");
         history
@@ -389,6 +398,7 @@ mod tests {
                 requests: Some(4),
                 total_tokens: Some(700),
                 estimated_cost_cny: Some(1.2),
+                balance_cny: None,
             })
             .expect("save another provider");
 
@@ -424,6 +434,7 @@ mod tests {
                             requests: Some(1),
                             total_tokens: Some(100),
                             estimated_cost_cny: None,
+                            balance_cny: None,
                         })
                         .expect("upsert succeeds under the write lock")
                 })
@@ -452,9 +463,66 @@ mod tests {
             requests: Some(1),
             total_tokens: Some(10),
             estimated_cost_cny: None,
+            balance_cny: None,
         });
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(result, Err(CacheError::Invalid));
+    }
+
+    #[test]
+    fn records_balance_samples_and_rejects_non_finite_values() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+
+        history
+            .upsert(DailyUsageRecord {
+                date: "2026-07-19".into(),
+                slot: Some(48),
+                provider_id: "kimi_cn".into(),
+                requests: None,
+                total_tokens: None,
+                estimated_cost_cny: None,
+                balance_cny: Some(52.5),
+            })
+            .expect("balance sample accepted");
+
+        for invalid in [f64::NAN, -1.0] {
+            let result = history.upsert(DailyUsageRecord {
+                date: "2026-07-19".into(),
+                slot: Some(49),
+                provider_id: "kimi_cn".into(),
+                requests: None,
+                total_tokens: None,
+                estimated_cost_cny: None,
+                balance_cny: Some(invalid),
+            });
+            assert_eq!(result, Err(CacheError::Invalid), "balance {invalid}");
+        }
+
+        let records = history.load().expect("load");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].balance_cny, Some(52.5));
+    }
+
+    #[test]
+    fn loads_legacy_history_without_balance_field() {
+        let dir = test_dir();
+        // A pre-balance history file: every record lacks `balanceCny`, which
+        // must deserialize as None rather than failing the whole load.
+        let parent = dir.join("history");
+        std::fs::create_dir_all(&parent).expect("create history dir");
+        std::fs::write(
+            parent.join("daily-usage.json"),
+            r#"[{"date":"2026-07-01","slot":null,"providerId":"glm","requests":3,"totalTokens":300,"estimatedCostCny":null}]"#,
+        )
+        .expect("seed legacy file");
+
+        let records = DailyUsageHistory::new(&dir).load().expect("legacy load");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].balance_cny, None);
     }
 
     #[test]
@@ -473,6 +541,7 @@ mod tests {
             requests: Some(1),
             total_tokens: Some(tokens),
             estimated_cost_cny: None,
+            balance_cny: None,
         };
         history.upsert(detail(48, 100)).expect("slot 48 first");
         history.upsert(detail(48, 150)).expect("slot 48 overwrite");
@@ -503,6 +572,7 @@ mod tests {
             requests: Some(1),
             total_tokens: Some(tokens),
             estimated_cost_cny: None,
+            balance_cny: None,
         };
         history.upsert(detail(0, 10)).expect("detail slot 0");
         history.upsert(detail(48, 50)).expect("detail slot 48");
@@ -518,6 +588,7 @@ mod tests {
                 requests: Some(2),
                 total_tokens: Some(500),
                 estimated_cost_cny: None,
+                balance_cny: None,
             })
             .expect("today record");
 

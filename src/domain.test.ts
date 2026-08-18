@@ -14,6 +14,7 @@ import {
   localDayRange,
   localDayRangeMs,
   localQuarterSlot,
+  selectBalanceTrend,
   selectDailyTrend,
   summarizeProviders,
   type DailyUsageRecord,
@@ -132,6 +133,58 @@ describe("15-minute slot helpers", () => {
     expect(formatQuarterSlot(0)).toBe("00:00");
     expect(formatQuarterSlot(48)).toBe("12:00");
     expect(formatQuarterSlot(95)).toBe("23:45");
+  });
+});
+
+describe("selectBalanceTrend", () => {
+  it("sums provider closing balances per day and carries the last known value", () => {
+    const records: DailyUsageRecord[] = [
+      // Day 1: Kimi 50 + MiniMax 30 = 80.
+      { date: "2026-07-11", slot: 20, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 50 },
+      { date: "2026-07-11", slot: 44, providerId: "minimax_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 30 },
+      // Day 2: only Kimi syncs; MiniMax's 30 carries forward → 45 + 30 = 75.
+      { date: "2026-07-12", slot: 10, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 45 },
+      // Day 3: latest slot of the day wins for Kimi (48, not 40) → 40 + 30 = 70.
+      { date: "2026-07-13", slot: 40, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 42 },
+      { date: "2026-07-13", slot: 48, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 40 },
+    ];
+    expect(selectBalanceTrend(records, "all", "all", new Date(2026, 6, 13))).toEqual([
+      { date: "2026-07-11", label: "07/11", balanceCny: 80, providers: 2 },
+      { date: "2026-07-12", label: "07/12", balanceCny: 75, providers: 2 },
+      { date: "2026-07-13", label: "07/13", balanceCny: 70, providers: 2 },
+    ]);
+  });
+
+  it("sums every instance of one provider and ignores providers without balance", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-07-12", slot: null, providerId: "kimi_cn", balanceCny: 50, requests: 1, totalTokens: 10, estimatedCostCny: null },
+      { date: "2026-07-12", slot: null, providerId: "kimi_cn_2", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 25 },
+      { date: "2026-07-12", slot: null, providerId: "glm", requests: 5, totalTokens: 500, estimatedCostCny: null },
+    ];
+    expect(selectBalanceTrend(records, "all", "kimi_cn", new Date(2026, 6, 13))).toEqual([
+      { date: "2026-07-12", label: "07/12", balanceCny: 75, providers: 2 },
+    ]);
+  });
+
+  it("carries intraday slot balances forward across providers in 24h mode", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-07-13", slot: 8, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 50 },
+      { date: "2026-07-13", slot: 12, providerId: "minimax_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 30 },
+      { date: "2026-07-13", slot: 16, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 45 },
+      // Yesterday's samples must not leak into today's curve.
+      { date: "2026-07-12", slot: 80, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 99 },
+    ];
+    expect(selectBalanceTrend(records, "24h", "all", new Date(2026, 6, 13, 20, 0))).toEqual([
+      { date: "2026-07-13", label: "02:00", balanceCny: 50, providers: 1 },
+      { date: "2026-07-13", label: "03:00", balanceCny: 80, providers: 2 },
+      { date: "2026-07-13", label: "04:00", balanceCny: 75, providers: 2 },
+    ]);
+  });
+
+  it("returns nothing when no sampled balances exist", () => {
+    expect(selectBalanceTrend([
+      { date: "2026-07-13", slot: null, providerId: "glm", requests: 5, totalTokens: 500, estimatedCostCny: null },
+    ], "all", "all", new Date(2026, 6, 13))).toEqual([]);
   });
 });
 

@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.91.0",
-    "@tauri-apps/api": "2.11.1"
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-autostart": "^2.5.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

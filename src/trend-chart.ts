@@ -1,4 +1,14 @@
-import { formatInteger, type DailyTrendPoint } from "./domain";
+import { formatInteger, type BalanceTrendPoint, type DailyTrendPoint } from "./domain";
+
+/** Compact ¥ label for the balance axis: ¥1234.5 → ¥1.2k. */
+function formatCurrencyAxis(value: number): string {
+  if (value >= 1000) return `¥${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return `¥${Math.round(value)}`;
+}
+
+function formatCurrencyExact(value: number): string {
+  return `¥${value.toFixed(2)}`;
+}
 
 const svgElement = <K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] =>
   document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -40,6 +50,8 @@ export function renderDailyTrendChart(
   chart.replaceChildren();
   if (empty) empty.hidden = points.length > 0;
   if (!points.length) {
+    // The balance renderer swaps this copy; restore the token wording on switch.
+    if (empty) empty.textContent = "同步供应商后，将从当天开始积累每日趋势。";
     if (descriptionElement) descriptionElement.textContent = "本地保存的非敏感日汇总 · 暂无历史数据";
     chart.setAttribute("aria-label", "所选范围暂无每日用量数据");
     return;
@@ -169,6 +181,144 @@ export function renderDailyTrendChart(
     : points.reduce((total, point) => total + (point.totalTokens ?? 0), 0);
   const totalLabel = intraday ? "今日累计" : "合计";
   const description = `${selectedName} · ${points.length} 个数据点 · ${totalLabel} ${formatInteger(totalTokens)} Token`;
+  chart.setAttribute("aria-label", description);
+  if (descriptionElement) descriptionElement.textContent = `本地保存的非敏感日汇总 · ${description}`;
+}
+
+/** Balance curve: same skeleton as the token chart but ¥-scaled, 0-based so
+ *  depletion reads honestly, and the latest total rides the last point. */
+export function renderBalanceTrendChart(
+  chart: SVGSVGElement,
+  empty: HTMLElement | null,
+  descriptionElement: HTMLElement | null,
+  points: BalanceTrendPoint[],
+  selectedName: string,
+  intraday: boolean,
+) {
+  chart.replaceChildren();
+  if (empty) empty.hidden = points.length > 0;
+  if (!points.length) {
+    if (empty) empty.textContent = "同步含余额的供应商后，将随同步积累余额变化曲线。";
+    if (descriptionElement) descriptionElement.textContent = "本地保存的非敏感日汇总 · 暂无余额数据";
+    chart.setAttribute("aria-label", "所选范围暂无余额数据");
+    return;
+  }
+
+  const width = 900;
+  const height = 190;
+  const plot = { left: 48, right: 16, top: 12, bottom: 26 };
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
+  const baseY = plot.top + plotHeight;
+  const maxBalance = Math.max(...points.map((point) => point.balanceCny), 1);
+  const x = (index: number) => plot.left + (points.length === 1
+    ? plotWidth / 2
+    : (index / (points.length - 1)) * plotWidth);
+  const y = (value: number) => plot.top + plotHeight - (value / maxBalance) * plotHeight;
+
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const value = (maxBalance * tick) / 4;
+    const tickY = y(value);
+    const line = svgElement("line");
+    line.setAttribute("class", "trend-grid-line");
+    line.setAttribute("x1", String(plot.left));
+    line.setAttribute("x2", String(width - plot.right));
+    line.setAttribute("y1", String(tickY));
+    line.setAttribute("y2", String(tickY));
+    const label = svgElement("text");
+    label.setAttribute("class", "trend-axis-label");
+    label.setAttribute("x", String(plot.left - 9));
+    label.setAttribute("y", String(tickY + 4));
+    label.setAttribute("text-anchor", "end");
+    label.textContent = formatCurrencyAxis(value);
+    chart.append(line, label);
+  }
+
+  const coords = points.map((point, index) => [x(index), y(point.balanceCny)] as const);
+  const linePath = smoothLinePath(coords, plot.top, baseY);
+
+  const defs = svgElement("defs");
+  const gradient = svgElement("linearGradient");
+  gradient.setAttribute("id", "trend-balance-fill");
+  gradient.setAttribute("x1", "0");
+  gradient.setAttribute("y1", "0");
+  gradient.setAttribute("x2", "0");
+  gradient.setAttribute("y2", "1");
+  const topStop = svgElement("stop");
+  topStop.setAttribute("offset", "0");
+  topStop.style.stopColor = "var(--accent)";
+  topStop.setAttribute("stop-opacity", "0.22");
+  const bottomStop = svgElement("stop");
+  bottomStop.setAttribute("offset", "1");
+  bottomStop.style.stopColor = "var(--accent)";
+  bottomStop.setAttribute("stop-opacity", "0");
+  gradient.append(topStop, bottomStop);
+  defs.append(gradient);
+  chart.append(defs);
+
+  if (coords.length > 1) {
+    const area = svgElement("path");
+    area.setAttribute("class", "trend-area");
+    area.setAttribute(
+      "d",
+      `${linePath} L${coords[coords.length - 1]![0]},${baseY} L${coords[0]![0]},${baseY} Z`,
+    );
+    chart.append(area);
+  }
+
+  const path = svgElement("path");
+  path.setAttribute("class", "trend-line");
+  path.setAttribute("d", linePath);
+  chart.append(path);
+
+  const lastIndex = points.length - 1;
+  const labelIndexes = new Set([0, Math.floor(lastIndex / 2), lastIndex]);
+  points.forEach((point, index) => {
+    const [pointX, pointY] = coords[index]!;
+    const circle = svgElement("circle");
+    circle.setAttribute("class", "trend-point");
+    if (index === lastIndex) circle.classList.add("latest");
+    circle.setAttribute("cx", String(pointX));
+    circle.setAttribute("cy", String(pointY));
+    circle.setAttribute(
+      "r",
+      index === lastIndex ? (points.length > 48 ? "2.6" : "5") : points.length > 48 ? "2" : "3.5",
+    );
+    circle.setAttribute("tabindex", "0");
+    const providerScope = point.providers > 1 ? ` · ${point.providers} 个实例` : "";
+    const pointDescription = `${point.label}，余额 ${formatCurrencyExact(point.balanceCny)}${providerScope}`;
+    circle.setAttribute("aria-label", pointDescription);
+    const title = svgElement("title");
+    title.textContent = pointDescription;
+    circle.append(title);
+    chart.append(circle);
+
+    if (labelIndexes.has(index)) {
+      const label = svgElement("text");
+      label.setAttribute("class", "trend-axis-label trend-date-label");
+      label.setAttribute("x", String(pointX));
+      label.setAttribute("y", String(height - 8));
+      label.setAttribute("text-anchor", index === 0 ? "start" : index === lastIndex ? "end" : "middle");
+      label.textContent = point.label;
+      chart.append(label);
+    }
+  });
+
+  const lastPoint = points[lastIndex]!;
+  const lastCoord = coords[lastIndex]!;
+  const latestLabel = svgElement("text");
+  latestLabel.setAttribute("class", "trend-axis-label trend-value-label");
+  latestLabel.setAttribute("x", String(lastCoord[0] - 9));
+  latestLabel.setAttribute(
+    "y",
+    String(lastCoord[1] - 9 < plot.top + 12 ? lastCoord[1] + 18 : lastCoord[1] - 9),
+  );
+  latestLabel.setAttribute("text-anchor", "end");
+  latestLabel.textContent = formatCurrencyExact(lastPoint.balanceCny);
+  chart.append(latestLabel);
+
+  const scope = intraday ? "当前" : "最新";
+  const description = `${selectedName} · ${points.length} 个数据点 · ${scope}余额 ${formatCurrencyExact(lastPoint.balanceCny)}`;
   chart.setAttribute("aria-label", description);
   if (descriptionElement) descriptionElement.textContent = `本地保存的非敏感日汇总 · ${description}`;
 }
