@@ -1009,14 +1009,16 @@ fn parse_quota(value: &Value) -> Result<ParsedQuota, OnlineError> {
         .get("limit")
         .and_then(number_like_f64)
         .ok_or(OnlineError::SchemaMismatch)?;
-    let remaining = value
-        .get("remaining")
-        .and_then(number_like_f64)
-        .ok_or(OnlineError::SchemaMismatch)?;
-    let used = value
-        .get("used")
-        .and_then(number_like_f64)
-        .unwrap_or(limit - remaining);
+    // Kimi's top-level usage object dropped `remaining` (2026-08: it now reports
+    // only limit/used/resetTime), so either side may be derived from the other.
+    let reported_used = value.get("used").and_then(number_like_f64);
+    let reported_remaining = value.get("remaining").and_then(number_like_f64);
+    let (used, remaining) = match (reported_used, reported_remaining) {
+        (Some(used), Some(remaining)) => (used, remaining),
+        (Some(used), None) => (used, limit - used),
+        (None, Some(remaining)) => (limit - remaining, remaining),
+        (None, None) => return Err(OnlineError::SchemaMismatch),
+    };
     if !limit.is_finite()
         || !used.is_finite()
         || !remaining.is_finite()
@@ -2906,6 +2908,55 @@ mod tests {
         assert_eq!(snapshot.quota_used_percent, Some(7.0));
         assert_eq!(snapshot.cooldown_ends_at_ms, None);
         assert_eq!(snapshot.secondary_value, "5 小时剩余 93% · 周额度剩余 52%");
+    }
+
+    #[test]
+    fn parses_kimi_code_after_weekly_usage_dropped_remaining() {
+        // Verbatim production body (2026-08-20): the top-level usage object now
+        // reports only limit/used/resetTime — `remaining` survives only inside
+        // limits[].detail. Deriving remaining = limit - used keeps the weekly
+        // window parseable instead of failing the whole sync.
+        let json = r#"{
+          "user": {"userId": "d6kio47ftae684n2c2g0", "region": "REGION_CN",
+                   "membership": {"level": "LEVEL_BASIC"}, "businessId": ""},
+          "usage": {"limit": "100", "used": "100", "resetTime": "2026-08-22T07:47:03.645002Z"},
+          "limits": [{
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {"limit": "100", "remaining": "100", "resetTime": "2026-08-20T02:47:03.645002Z"}
+          }],
+          "parallel": {"limit": "10"},
+          "totalQuota": {},
+          "authentication": {"method": "METHOD_API_KEY", "scope": "FEATURE_CODING"},
+          "subType": "TYPE_PURCHASE",
+          "domain": "DOMAIN_NEXUS"
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::KimiCn, json).expect("snapshot");
+
+        assert_eq!(snapshot.quota_used_percent, Some(0.0));
+        assert_eq!(snapshot.primary_value, "0.0%");
+        assert_eq!(snapshot.secondary_value, "5 小时剩余 100% · 周额度剩余 0%");
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_787_194_023_645));
+
+        let windows = &snapshot.detail_sections[0];
+        assert_eq!(windows.entries[0].label, "周额度");
+        assert_eq!(windows.entries[0].used.as_deref(), Some("100"));
+        assert_eq!(windows.entries[0].remaining.as_deref(), Some("0"));
+        assert_eq!(windows.entries[0].used_percent, Some(100.0));
+        assert_eq!(windows.entries[0].reset_at_ms, Some(1_787_384_823_645));
+    }
+
+    #[test]
+    fn rejects_quota_objects_without_used_or_remaining() {
+        let json = r#"{"limit": "100"}"#;
+        let value: Value = serde_json::from_str(json).expect("json");
+
+        let error = match parse_quota(&value) {
+            Ok(_) => panic!("limit without used or remaining must not parse"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, OnlineError::SchemaMismatch);
     }
 
     #[test]
