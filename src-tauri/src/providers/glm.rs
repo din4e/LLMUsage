@@ -25,6 +25,10 @@ pub struct GlmUsageSnapshot {
 pub enum GlmParseError {
     InvalidJson,
     ApiRejected,
+    /// The BigModel monitor endpoints answer pay-as-you-go accounts with
+    /// `{"code":500,"msg":"当前用户不存在coding plan"}` over HTTP 200. A valid
+    /// key without a Coding Plan subscription is this error, not a rejection.
+    NoCodingPlan,
     SchemaMismatch,
     InvalidCredential,
     InvalidDateRange,
@@ -36,6 +40,7 @@ impl GlmParseError {
         match self {
             Self::InvalidJson => "GLM_INVALID_JSON",
             Self::ApiRejected => "GLM_API_REJECTED",
+            Self::NoCodingPlan => "GLM_NO_CODING_PLAN",
             Self::SchemaMismatch => "GLM_SCHEMA_MISMATCH",
             Self::InvalidCredential => "GLM_INVALID_CREDENTIAL",
             Self::InvalidDateRange => "GLM_INVALID_DATE_RANGE",
@@ -134,6 +139,16 @@ impl GlmClient {
     }
 }
 
+/// True when a rejected response blames a missing Coding Plan subscription.
+/// Verified against production: both monitor endpoints answer a pay-as-you-go
+/// key with `msg: "当前用户不存在coding plan"`.
+fn hints_missing_coding_plan(quota: &QuotaResponse, usage: &UsageResponse) -> bool {
+    [quota.msg.as_deref(), usage.msg.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|message| message.to_ascii_lowercase().contains("coding plan"))
+}
+
 fn is_monitor_datetime(value: &str) -> bool {
     if value.len() != 19 {
         return false;
@@ -160,6 +175,8 @@ impl fmt::Display for GlmParseError {
 #[derive(Deserialize)]
 struct QuotaResponse {
     code: i64,
+    #[serde(default)]
+    msg: Option<String>,
     data: Option<QuotaData>,
 }
 
@@ -181,6 +198,8 @@ struct TokenLimit {
 #[derive(Deserialize)]
 struct UsageResponse {
     code: i64,
+    #[serde(default)]
+    msg: Option<String>,
     data: Option<UsageData>,
 }
 
@@ -208,6 +227,9 @@ pub fn parse_snapshot(
         serde_json::from_str(usage_json).map_err(|_| GlmParseError::InvalidJson)?;
 
     if quota.code != 200 || usage.code != 200 {
+        if hints_missing_coding_plan(&quota, &usage) {
+            return Err(GlmParseError::NoCodingPlan);
+        }
         return Err(GlmParseError::ApiRejected);
     }
 
@@ -301,6 +323,43 @@ mod tests {
         assert_eq!(entry.remaining.as_deref(), Some("31.5"));
         assert_eq!(entry.reset_at_ms, Some(1_783_686_600_000));
         assert_eq!(entry.start_at_ms, Some(1_783_686_600_000 - GLM_WINDOW_MS));
+    }
+
+    #[test]
+    fn maps_missing_coding_plan_rejections_to_a_dedicated_error() {
+        // Verbatim production body returned to a valid pay-as-you-go key.
+        let no_plan = r#"{"code":500,"msg":"当前用户不存在coding plan","success":false}"#;
+        let usage = r#"{
+          "code": 200,
+          "data": {
+            "totalUsage":{"totalModelCallCount":0,"totalTokensUsage":0}
+          }
+        }"#;
+
+        let error = parse_snapshot(no_plan, usage).expect_err("no plan means no monitor data");
+        assert_eq!(error.code(), "GLM_NO_CODING_PLAN");
+
+        // The usage endpoint answers the same body, even when quota succeeds.
+        let quota_ok = r#"{
+          "code": 200,
+          "data": {
+            "level": "PRO",
+            "limits": [{"type":"TOKENS_LIMIT","percentage":10,"nextResetTime":1783686600000}]
+          }
+        }"#;
+        let error = parse_snapshot(quota_ok, no_plan).expect_err("no plan means no monitor data");
+        assert_eq!(error, GlmParseError::NoCodingPlan);
+    }
+
+    #[test]
+    fn keeps_generic_rejection_for_other_error_bodies() {
+        let quota = r#"{"code":1002,"msg":"Authorization Token invalid","success":false}"#;
+        let usage = r#"{"code":200,"data":{"totalUsage":{"totalModelCallCount":0,"totalTokensUsage":0}}}"#;
+
+        let error =
+            parse_snapshot(quota, usage).expect_err("other rejections stay generic");
+
+        assert_eq!(error, GlmParseError::ApiRejected);
     }
 
     #[test]

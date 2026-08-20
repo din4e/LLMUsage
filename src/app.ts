@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { renderProviderDetails } from "./details";
 import {
   baseProviderId,
@@ -32,6 +33,13 @@ import {
   sanitizeInstanceRemark,
   serializeProviderCredential,
 } from "./providers";
+import {
+  buildExportRemarks,
+  exportDefaultFileName,
+  importResultLines,
+  importSummaryText,
+  type ImportEntryResult,
+} from "./transfer";
 import { initializeWindowControls } from "./window-controls";
 import { renderBalanceTrendChart, renderDailyTrendChart } from "./trend-chart";
 import "./styles.css";
@@ -102,9 +110,18 @@ const trendEmpty = byId<HTMLElement>("trend-empty");
 const trendDescription = byId<HTMLElement>("trend-description");
 const confirmDialog = byId<HTMLDialogElement>("confirm-dialog");
 const confirmForm = byId<HTMLFormElement>("confirm-form");
+const confirmTitle = byId<HTMLElement>("confirm-title");
 const confirmMessage = byId<HTMLElement>("confirm-message");
 const confirmAccept = byId<HTMLButtonElement>("confirm-accept");
+// The confirm dialog is shared by delete and full-export; each flow sets the
+// pending intent plus the accept label, and the close handler restores both.
 let pendingDeleteInstance: string | null = null;
+let pendingExportMode: "full" | "status" | null = null;
+let confirmAcceptLabel = "删除";
+const exportDialog = byId<HTMLDialogElement>("export-dialog");
+const importResultDialog = byId<HTMLDialogElement>("import-result-dialog");
+const importResultSummary = byId<HTMLElement>("import-result-summary");
+const importResultList = byId<HTMLElement>("import-result-list");
 const renameDialog = byId<HTMLDialogElement>("rename-dialog");
 const renameForm = byId<HTMLFormElement>("rename-form");
 const renameTitle = byId<HTMLElement>("rename-title");
@@ -805,13 +822,94 @@ function instanceError(instanceId: string, fallback: string, reason: unknown): s
   return message.startsWith(name) ? message : `${name}：${message}`;
 }
 
+/** Styles the shared confirm dialog; callers own their pending-intent vars. */
+function prepareConfirmDialog(title: string, message: string, acceptLabel: string) {
+  confirmAcceptLabel = acceptLabel;
+  if (confirmTitle) confirmTitle.textContent = title;
+  if (confirmMessage) confirmMessage.textContent = message;
+  if (confirmAccept) confirmAccept.textContent = acceptLabel;
+}
+
 function deleteProviderInstance(instanceId: string) {
   if (!providerDefinition(instanceId) || !isTauri()) return;
   pendingDeleteInstance = instanceId;
-  if (confirmMessage) {
-    confirmMessage.textContent = `删除「${providerName(instanceId)}」会清除本机保存的 API Key 与缓存摘要，但不影响已保存的历史趋势。确定继续吗？`;
-  }
+  prepareConfirmDialog(
+    "确认删除",
+    `删除「${providerName(instanceId)}」会清除本机保存的 API Key 与缓存摘要，但不影响已保存的历史趋势。确定继续吗？`,
+    "删除",
+  );
   confirmDialog?.showModal();
+}
+
+/** Picks a save path and writes the transfer file via the Rust command. */
+async function runExport(mode: "full" | "status") {
+  setStatus("正在导出…", "syncing");
+  const path = await saveFileDialog({
+    title: mode === "full" ? "导出完整备份" : "导出状态报告",
+    defaultPath: exportDefaultFileName(mode, localDateKey()),
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (!path) {
+    // Cancelling the native dialog is not an error; clear the busy status.
+    setStatus("");
+    return;
+  }
+  try {
+    const summary = await invoke<{ instanceCount: number }>("export_provider_backup", {
+      path,
+      mode,
+      remarks: buildExportRemarks(instanceRemarks, configuredInstanceIds),
+    });
+    setStatus(
+      `已导出 ${summary.instanceCount} 个实例${mode === "full" ? "（含明文密钥，请妥善保管）" : ""}`,
+    );
+  } catch (reason) {
+    setStatus((reason as CommandError)?.message ?? "导出失败，请稍后重试", "error");
+  }
+}
+
+/**
+ * Imports a transfer file. The backend saves credentials without any network
+ * traffic; remarks follow their assigned ids and syncing stays a separate,
+ * user-triggered step.
+ */
+async function runImport() {
+  if (!isTauri()) {
+    setStatus("导入/导出仅桌面可用", "error");
+    return;
+  }
+  const path = await openFileDialog({
+    title: "导入供应商配置",
+    multiple: false,
+    directory: false,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (!path) return;
+  try {
+    const results = await invoke<ImportEntryResult[]>("import_provider_backup", { path });
+    for (const result of results) {
+      if (result.outcome !== "saved" || !result.assignedInstanceId || !result.remark) continue;
+      // Assigned ids are always freshly created, so a file remark can never
+      // overwrite an existing local one.
+      instanceRemarks.set(result.assignedInstanceId, sanitizeInstanceRemark(result.remark));
+    }
+    persistInstanceRemarks();
+    await loadProviderInstances();
+    if (importResultSummary) importResultSummary.textContent = importSummaryText(results);
+    if (importResultList) {
+      importResultList.replaceChildren(
+        ...importResultLines(results).map((line) => {
+          const item = document.createElement("li");
+          item.textContent = line;
+          return item;
+        }),
+      );
+    }
+    importResultDialog?.showModal();
+    setStatus(importSummaryText(results));
+  } catch (reason) {
+    setStatus((reason as CommandError)?.message ?? "导入失败，请稍后重试", "error");
+  }
 }
 
 async function loadProviderInstances() {
@@ -961,6 +1059,42 @@ document.addEventListener("click", (event) => {
     updateAutoSyncOptions(seconds);
     return;
   }
+  if (button.dataset.action === "export-providers") {
+    if (!isTauri()) {
+      setStatus("导入/导出仅桌面可用", "error");
+      return;
+    }
+    exportDialog?.showModal();
+    return;
+  }
+  if (button.dataset.action === "close-export-dialog") {
+    exportDialog?.close();
+    return;
+  }
+  if (button.dataset.action === "choose-export-full") {
+    exportDialog?.close();
+    pendingExportMode = "full";
+    prepareConfirmDialog(
+      "导出完整备份",
+      "完整备份将以明文包含所有已配置实例的 API Key。任何拿到该文件的人都能使用你的密钥。确定继续导出吗？",
+      "继续导出",
+    );
+    confirmDialog?.showModal();
+    return;
+  }
+  if (button.dataset.action === "choose-export-status") {
+    exportDialog?.close();
+    void runExport("status");
+    return;
+  }
+  if (button.dataset.action === "import-providers") {
+    void runImport();
+    return;
+  }
+  if (button.dataset.action === "close-import-result") {
+    importResultDialog?.close();
+    return;
+  }
   if (button.dataset.action === "rename-provider") {
     openRenameDialog(button.dataset.provider ?? "");
     return;
@@ -1103,6 +1237,24 @@ dialog?.addEventListener("close", () => credentialFields?.replaceChildren());
 
 confirmForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const exportMode = pendingExportMode;
+  if (exportMode) {
+    if (confirmAccept) {
+      confirmAccept.disabled = true;
+      confirmAccept.textContent = "导出中…";
+    }
+    try {
+      await runExport(exportMode);
+    } finally {
+      pendingExportMode = null;
+      confirmDialog?.close();
+      if (confirmAccept) {
+        confirmAccept.disabled = false;
+        confirmAccept.textContent = confirmAcceptLabel;
+      }
+    }
+    return;
+  }
   const instanceId = pendingDeleteInstance;
   if (!instanceId || !confirmAccept) {
     confirmDialog?.close();
@@ -1129,15 +1281,16 @@ confirmForm?.addEventListener("submit", async (event) => {
     pendingDeleteInstance = null;
     confirmDialog?.close();
     confirmAccept.disabled = false;
-    confirmAccept.textContent = "删除";
+    confirmAccept.textContent = confirmAcceptLabel;
   }
 });
 
 confirmDialog?.addEventListener("close", () => {
   pendingDeleteInstance = null;
+  pendingExportMode = null;
   if (confirmAccept) {
     confirmAccept.disabled = false;
-    confirmAccept.textContent = "删除";
+    confirmAccept.textContent = confirmAcceptLabel;
   }
 });
 

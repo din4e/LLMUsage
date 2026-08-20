@@ -37,6 +37,13 @@ describe("provider catalog", () => {
     expect(providerDefinitions.find((provider) => provider.id === "glm")?.logo).toContain("Zhipu");
   });
 
+  it("tells GLM users the card requires a Coding Plan subscription", () => {
+    const hint = providerDefinition("glm")?.credentialHint ?? "";
+
+    expect(hint).toContain("Coding Plan");
+    expect(hint).toContain("按量付费");
+  });
+
   it("resolves definitions for base ids and numbered instances", () => {
     expect(providerDefinition("kimi_cn")?.id).toBe("kimi_cn");
     expect(providerDefinition("kimi_cn_2")?.id).toBe("kimi_cn");

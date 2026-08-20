@@ -23,6 +23,9 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // Native save/open dialogs for provider backup import/export. Only
+        // the picked path crosses the bridge; file I/O stays in Rust.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             tray::setup(app.handle())?;
             Ok(())
@@ -42,7 +45,9 @@ fn main() {
             app::load_provider_credential,
             app::list_provider_instances,
             app::load_cached_snapshots,
-            app::load_daily_usage
+            app::load_daily_usage,
+            app::export_provider_backup,
+            app::import_provider_backup
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LLM Usage");

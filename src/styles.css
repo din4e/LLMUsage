@@ -470,6 +470,8 @@ dialog::backdrop { background: rgb(2 8 7 / 72%); backdrop-filter: blur(5px); }
 dialog form { padding: 18px; }
 #catalog-dialog { width: min(720px, calc(100% - 24px)); }
 #confirm-dialog { width: min(460px, calc(100% - 24px)); }
+/* These two skip the form wrapper, so they carry the dialog padding themselves. */
+#export-dialog, #import-result-dialog { padding: 18px; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; }
 .dialog-copy { margin-bottom: 12px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .close-button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; }
@@ -484,6 +486,10 @@ input:hover { border-color: var(--line-strong); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .secondary-button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; }
 .secondary-button:hover { border-color: var(--line-strong); color: var(--text); }
+/* Import/export actions dock beside the instance count in the providers topbar. */
+.topbar-button { min-height: 30px; padding: 3px 10px; font-size: 13px; }
+.export-options { display: grid; gap: 10px; margin-top: 16px; }
+.import-result-list { max-height: min(46vh, 380px); margin: 12px 0 0; padding: 0 0 0 20px; display: grid; gap: 6px; overflow: auto; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .provider-catalog { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-height: min(62vh, 540px); overflow: auto; }
 /* The providers page embeds the same catalog without the dialog's height cap. */
 .page-catalog { max-height: none; overflow: visible; margin-bottom: 14px; }

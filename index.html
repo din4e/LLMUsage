@@ -97,6 +97,8 @@
             <h1>供应商设置</h1>
           </div>
           <div class="topbar-actions">
+            <button type="button" class="secondary-button topbar-button" data-action="import-providers">导入</button>
+            <button type="button" class="secondary-button topbar-button" data-action="export-providers">导出</button>
             <span class="about-version"><span id="providers-configured-count">0</span> 个已配置实例</span>
           </div>
         </header>
@@ -213,6 +215,22 @@
         </div>
         <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-rename-dialog">取消</button><button type="submit" id="rename-accept" class="refresh-button">保存备注</button></div>
       </form>
+    </dialog>
+
+    <dialog id="export-dialog" aria-labelledby="export-title">
+      <div class="dialog-heading"><div><p class="eyebrow">EXPORT</p><h2 id="export-title">导出配置</h2></div><button type="button" class="close-button" data-action="close-export-dialog" aria-label="关闭">×</button></div>
+      <p class="dialog-copy">完整备份包含明文 API Key 与实例备注，仅用于本机备份或迁移，请妥善保管导出文件；状态报告只含各实例的剩余额度与余额信息，可以安全分享。</p>
+      <div class="export-options">
+        <button type="button" class="refresh-button" data-action="choose-export-full">导出完整备份（含密钥）</button>
+        <button type="button" class="secondary-button" data-action="choose-export-status">导出状态报告（不含密钥）</button>
+      </div>
+    </dialog>
+
+    <dialog id="import-result-dialog" aria-labelledby="import-result-title">
+      <div class="dialog-heading"><div><p class="eyebrow">IMPORT</p><h2 id="import-result-title">导入结果</h2></div><button type="button" class="close-button" data-action="close-import-result" aria-label="关闭">×</button></div>
+      <p class="dialog-copy" id="import-result-summary">导入完成。</p>
+      <ul class="import-result-list" id="import-result-list"></ul>
+      <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-import-result">关闭</button></div>
     </dialog>
 
     <script type="module" src="/src/app.ts"></script>

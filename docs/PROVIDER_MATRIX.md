@@ -103,6 +103,10 @@ The MIT-licensed `LaughSmiles/glm-key-monitor` project demonstrates three API-ke
 
 Requests send the BigModel API key directly in the `Authorization` header and accept optional `startTime` and `endTime` query parameters. The observed quota schema includes a plan `level` and a `limits` array whose entries contain `type`, `percentage`, `nextResetTime`, optional current usage, and optional per-model usage details. The current rolling token window is the `TOKENS_LIMIT` entry with the nearest reset time.
 
+Verified 2026-08-19: a valid pay-as-you-go key without a Coding Plan subscription gets HTTP 200 with `{"code":500,"msg":"当前用户不存在coding plan","success":false}` from both endpoints. The adapter maps this body to the dedicated `GLM_NO_CODING_PLAN` error and refuses to save the credential; the key itself is not invalid.
+
+Negative verification 2026-08-19 — no pay-as-you-go data source exists: Zhipu publishes no balance/usage/account API (the docs.bigmodel.cn sitemap enumerates only model, tool, batch, file, knowledge-base, and agent APIs); probed and rejected with 404: `/api/paas/v4/users/balance`, `/api/paas/v4/balance`, `/api/paas/v4/users/me`, `/api/paas/v4/dashboard/billing/{subscription,usage,credit_grants}`; community tooling (cc-switch #1588, glm-key-monitor) queries only the Coding-Plan monitor endpoints above; the official fee FAQ points users to the console finance page. A non-Coding-Plan GLM adapter is therefore blocked upstream, not by this app.
+
 These endpoints are not currently documented in GLM's public official API reference. They therefore remain an **experimental compatibility source**, not an official API capability. Implementation requirements:
 
 1. Validate the full response before persisting or displaying any value.
@@ -169,7 +173,7 @@ These endpoints are not currently documented in GLM's public official API refere
 
 ## Research Queue
 
-- GLM standard API balance and official publication/stability of the monitor endpoints.
+- GLM standard API balance: verified absent as of 2026-08-19 (see negative verification above); re-check if Zhipu announces a billing API. Monitor-endpoint official publication/stability still open.
 - Official publication/stability of the Kimi Code usage endpoint.
 - MiniMax international Token Plan endpoint and response schema.
 - Alibaba Cloud Model Studio Coding Plan/Token Plan remaining quota remains console-only and is not queried with plan keys because official terms prohibit custom automated clients.

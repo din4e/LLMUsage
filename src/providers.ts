@@ -44,7 +44,7 @@ export const providerDefinitions: ProviderDefinition[] = [
     name: "智谱 GLM",
     subtitle: "Coding Plan · 兼容监控",
     logo: zhipuLogo,
-    credentialHint: "使用智谱开放平台 API Key；完整密钥仅交给 Rust 后端并由 Windows DPAPI 加密。",
+    credentialHint: "需要订阅 GLM Coding Plan 的账号 API Key（监控 5 小时额度窗口）；普通按量付费 Key 无法查询，保存时会被拒绝。完整密钥仅交给 Rust 后端并由 Windows DPAPI 加密。",
     fields: [apiKeyField()],
   },
   {
