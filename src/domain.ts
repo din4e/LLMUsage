@@ -229,6 +229,78 @@ export function selectBalanceTrend(
   return points;
 }
 
+/** How an instance's today spend was measured. */
+export type TodaySpendSource = "cost-api" | "balance-diff";
+
+/** One instance's today fund consumption in ¥. */
+export interface TodaySpend {
+  spendCny: number;
+  source: TodaySpendSource;
+}
+
+/** Per-instance today's fund consumption. Official cost wins when the
+ *  provider reports one; otherwise the spend is estimated by diffing today's
+ *  balance samples against the last pre-today closing balance — decreases
+ *  accumulate, recharges (increases) are clamped to zero, never negative. */
+export function selectTodaySpend(
+  records: DailyUsageRecord[],
+  today = new Date(),
+): Map<string, TodaySpend> {
+  const todayKey = localDateKey(today);
+  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const chronological = (left: DailyUsageRecord, right: DailyUsageRecord): number =>
+    left.date.localeCompare(right.date) || slotRank(left) - slotRank(right);
+
+  const byInstance = new Map<string, DailyUsageRecord[]>();
+  for (const record of records) {
+    if (record.date > todayKey) continue;
+    const list = byInstance.get(record.providerId) ?? [];
+    list.push(record);
+    byInstance.set(record.providerId, list);
+  }
+
+  const spend = new Map<string, TodaySpend>();
+  for (const [instanceId, instanceRecords] of byInstance) {
+    // Rule 1: official cost — today's records carry same-day cumulative cost,
+    // so the newest slot holding a figure is today's spend so far.
+    const costRecords = instanceRecords
+      .filter((record) => record.date === todayKey && record.estimatedCostCny != null)
+      .sort(chronological);
+    const latestCost = costRecords.length ? costRecords[costRecords.length - 1] : null;
+    if (latestCost) {
+      spend.set(instanceId, { spendCny: latestCost.estimatedCostCny ?? 0, source: "cost-api" });
+      continue;
+    }
+
+    // Rule 2: balance diff — walk from the last pre-today closing balance
+    // through today's samples in order and sum the clamped decreases.
+    const samples = instanceRecords
+      .filter((record): record is DailyUsageRecord & { balanceCny: number } =>
+        record.balanceCny != null)
+      .sort(chronological);
+    let baseline: number | null = null;
+    const todaySamples: number[] = [];
+    for (const record of samples) {
+      if (record.date < todayKey) baseline = record.balanceCny;
+      else todaySamples.push(record.balanceCny);
+    }
+    // First day of tracking has no known opening balance, and an instance
+    // that has not synced today must not inherit yesterday's spend.
+    if (todaySamples.length === 0) continue;
+    if (baseline == null && todaySamples.length < 2) continue;
+
+    const series = baseline == null ? todaySamples : [baseline, ...todaySamples];
+    let total = 0;
+    let previous: number | undefined;
+    for (const sample of series) {
+      if (previous != null) total += Math.max(0, previous - sample);
+      previous = sample;
+    }
+    spend.set(instanceId, { spendCny: total, source: "balance-diff" });
+  }
+  return spend;
+}
+
 export function formatCooldown(resetAtMs: number, nowMs = Date.now()): string {
   const remainingSeconds = Math.max(0, Math.floor((resetAtMs - nowMs) / 1_000));
   if (remainingSeconds < 60) return "即将恢复";
@@ -246,6 +318,11 @@ export function formatInteger(value: number): string {
   if (value < 1_000_000) return Math.round(value).toLocaleString("en-US");
   if (value < 1_000_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   return `${(value / 1_000_000_000).toFixed(1)}B`;
+}
+
+/** `¥12.34` — round only at display time so aggregations never double-round. */
+export function formatCny(value: number): string {
+  return `¥${value.toFixed(2)}`;
 }
 
 export function formatQuotaDetailValue(entry: OnlineDetailEntry): string {

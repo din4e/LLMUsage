@@ -263,7 +263,7 @@ select:hover { border-color: var(--line-strong); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.metric-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 0; border-radius: 8px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
+.metric-strip { display: grid; grid-template-columns: repeat(5, 1fr); border: 0; border-radius: 8px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
 .metric-strip article { position: relative; min-height: 34px; padding: 4px 10px 3px; overflow: hidden; }
 .metric-strip span { display: inline; margin: 0 7px 0 0; color: var(--muted); font-size: 12px; }
 .metric-strip strong {
@@ -359,6 +359,7 @@ select:hover { border-color: var(--line-strong); }
   color: var(--muted);
   font-size: 13px;
 }
+.usage-cell .today-spend { flex: 0 0 auto; min-width: 0; color: var(--warm); font-variant-numeric: tabular-nums; }
 .quota-cell { display: flex; flex: 0 1 auto; align-items: center; gap: 7px; min-width: 0; }
 .quota-cell b { color: var(--accent); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .quota-cell progress { display: inline-block; width: 56px; height: 4px; margin: 0 2px; vertical-align: middle; }

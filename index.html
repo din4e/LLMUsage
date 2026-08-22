@@ -12,7 +12,7 @@
       <div class="window-drag-region" data-tauri-drag-region>
         <span class="window-app-symbol" aria-hidden="true">◇</span>
         <strong>LLM Usage</strong>
-        <span class="window-version" id="window-version">v0.1.4</span>
+        <span class="window-version" id="window-version">v0.1.5</span>
         <span class="window-runtime"><i></i> TRAY SERVICE</span>
       </div>
       <div class="window-controls" aria-label="窗口控制">
@@ -45,6 +45,7 @@
         <section class="metric-strip" aria-label="今日总览">
           <article><span>请求</span><strong id="total-requests">—</strong><small>次调用</small></article>
           <article><span>Token</span><strong id="total-tokens">—</strong><small>输入 + 输出</small></article>
+          <article><span>今日消耗</span><strong id="today-spend">—</strong><small>官方成本 + 余额估算</small></article>
           <article><span>余额/成本</span><strong id="total-cost">—</strong><small>人民币口径</small></article>
           <article class="coverage"><span>在线覆盖</span><strong id="coverage">0 / 9</strong><small>已配置供应商</small></article>
         </section>
@@ -126,7 +127,7 @@
             <h1>关于 LLM Usage</h1>
           </div>
           <div class="topbar-actions">
-            <span class="about-version">v<span id="app-version">0.1.4</span></span>
+            <span class="about-version">v<span id="app-version">0.1.5</span></span>
           </div>
         </header>
 
@@ -136,7 +137,7 @@
           <p class="about-copy">在一个桌面窗口里集中查看各家大模型供应商的今日用量、每日趋势、套餐额度、余额、成本估算与冷却时间。凭据仅保存在本机，按需直接请求供应商官方接口，不经过任何第三方服务器。</p>
 
           <div class="about-grid" aria-label="应用信息">
-            <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.4</strong><small>由 Tauri 配置提供</small></article>
+            <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.5</strong><small>由 Tauri 配置提供</small></article>
             <article class="about-fact"><span>应用标识</span><strong>cn.ttpublic.llmusage</strong><small>Bundle Identifier</small></article>
             <article class="about-fact"><span>技术栈</span><strong>Tauri 2 · Rust · TS</strong><small>原生壳 + Vite 前端</small></article>
             <article class="about-fact"><span>供应商</span><strong id="about-provider-count">—</strong><small>可配置在线供应商</small></article>

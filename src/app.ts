@@ -6,6 +6,7 @@ import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plug
 import { renderProviderDetails } from "./details";
 import {
   baseProviderId,
+  formatCny,
   formatCooldown,
   formatInteger,
   instanceIndexOf,
@@ -16,6 +17,7 @@ import {
   localQuarterSlot,
   selectBalanceTrend,
   selectDailyTrend,
+  selectTodaySpend,
   summarizeProviders,
   type DailyUsageRecord,
   type OnlineDetailSection,
@@ -141,7 +143,7 @@ let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
 let selectedTrendMetric: "tokens" | "balance" = "tokens";
-const APP_VERSION_FALLBACK = "0.1.4";
+const APP_VERSION_FALLBACK = "0.1.5";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
@@ -204,6 +206,46 @@ async function loadDailyUsage() {
   }
   renderTrendProviderOptions();
   renderTrend();
+  renderTodaySpend();
+}
+
+/** Writes the per-row 「今日消耗」 figures and the aggregate metric tile.
+ *  Both derive from history records, so they refresh together with
+ *  loadDailyUsage() — at startup and after every sync round. */
+function renderTodaySpend() {
+  const spendByInstance = selectTodaySpend(dailyUsageRecords);
+  for (const instanceId of configuredInstanceIds) {
+    const spend = spendByInstance.get(instanceId);
+    for (const row of providerRows(instanceId)) {
+      const element = row.querySelector<HTMLElement>(".today-spend");
+      if (!element) continue;
+      if (!spend) {
+        element.hidden = true;
+        element.removeAttribute("title");
+        continue;
+      }
+      element.hidden = false;
+      element.textContent = spend.source === "balance-diff"
+        ? `今日消耗 ${formatCny(spend.spendCny)} · 估算`
+        : `今日消耗 ${formatCny(spend.spendCny)}`;
+      element.title = spend.source === "balance-diff"
+        ? "按余额变化估算 · 充值不计入"
+        : "官方成本接口";
+    }
+  }
+  // Sum only configured instances: deleted accounts keep their history (the
+  // trend charts rely on it) but must drop out of the live aggregate, matching
+  // how renderTotals() drops their snapshots.
+  let total = 0;
+  let contributors = 0;
+  for (const instanceId of configuredInstanceIds) {
+    const spend = spendByInstance.get(instanceId);
+    if (!spend) continue;
+    total += spend.spendCny;
+    contributors += 1;
+  }
+  const tile = byId<HTMLElement>("today-spend");
+  if (tile) tile.textContent = contributors > 0 ? formatCny(total) : "—";
 }
 
 function ensureProviderRow(instanceId: string): HTMLElement | null {
@@ -258,7 +300,10 @@ function createProviderRow(instanceId: string): HTMLElement | null {
   const usageHint = document.createElement("small");
   usageHint.className = "usage-hint";
   usageHint.textContent = "已保存凭据";
-  usage.append(usageLabel, usageValue, usageHint);
+  const todaySpend = document.createElement("small");
+  todaySpend.className = "today-spend";
+  todaySpend.hidden = true;
+  usage.append(usageLabel, usageValue, usageHint, todaySpend);
 
   const quota = document.createElement("div");
   quota.className = "quota-cell";

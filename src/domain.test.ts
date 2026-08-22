@@ -4,6 +4,7 @@ import {
   computeTimeWindowElapsedPercent,
   credentialHint,
   formatCooldown,
+  formatCny,
   formatDuration,
   formatInteger,
   formatQuotaDetailValue,
@@ -16,6 +17,7 @@ import {
   localQuarterSlot,
   selectBalanceTrend,
   selectDailyTrend,
+  selectTodaySpend,
   summarizeProviders,
   type DailyUsageRecord,
 } from "./domain";
@@ -185,6 +187,87 @@ describe("selectBalanceTrend", () => {
     expect(selectBalanceTrend([
       { date: "2026-07-13", slot: null, providerId: "glm", requests: 5, totalTokens: 500, estimatedCostCny: null },
     ], "all", "all", new Date(2026, 6, 13))).toEqual([]);
+  });
+});
+
+describe("selectTodaySpend", () => {
+  const today = new Date(2026, 6, 13, 20, 0);
+  const balance = (date: string, slot: number | null, providerId: string, balanceCny: number): DailyUsageRecord => ({
+    date, slot, providerId, requests: null, totalTokens: null, estimatedCostCny: null, balanceCny,
+  });
+
+  it("uses the latest official cost recorded today", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-07-12", slot: 40, providerId: "openai_codex", requests: 9, totalTokens: 900, estimatedCostCny: 9 },
+      { date: "2026-07-13", slot: 48, providerId: "openai_codex", requests: 2, totalTokens: 200, estimatedCostCny: 0.5 },
+      { date: "2026-07-13", slot: 52, providerId: "openai_codex", requests: 3, totalTokens: 300, estimatedCostCny: 0.8 },
+    ];
+    expect(selectTodaySpend(records, today).get("openai_codex"))
+      .toEqual({ spendCny: 0.8, source: "cost-api" });
+  });
+
+  it("estimates balance-diff spend and clamps recharges to zero", () => {
+    const records: DailyUsageRecord[] = [
+      balance("2026-07-12", 88, "deepseek", 100),
+      balance("2026-07-13", 20, "deepseek", 80),
+      balance("2026-07-13", 40, "deepseek", 180),
+      balance("2026-07-13", 60, "deepseek", 150),
+    ];
+    // 100→80 (¥20) + 充值 80→180 (不计) + 180→150 (¥30) = ¥50。
+    expect(selectTodaySpend(records, today).get("deepseek"))
+      .toEqual({ spendCny: 50, source: "balance-diff" });
+  });
+
+  it("diffs against yesterday's closing (latest slot) balance", () => {
+    const records: DailyUsageRecord[] = [
+      balance("2026-07-12", 10, "ppio", 40),
+      balance("2026-07-12", 48, "ppio", 42),
+      balance("2026-07-13", 30, "ppio", 39),
+    ];
+    expect(selectTodaySpend(records, today).get("ppio"))
+      .toEqual({ spendCny: 3, source: "balance-diff" });
+  });
+
+  it("skips the first tracked day until two samples exist", () => {
+    expect(selectTodaySpend([
+      balance("2026-07-13", 20, "kimi_cn", 50),
+    ], today).has("kimi_cn")).toBe(false);
+    expect(selectTodaySpend([
+      balance("2026-07-13", 20, "kimi_cn", 50),
+      balance("2026-07-13", 44, "kimi_cn", 44),
+    ], today).get("kimi_cn")).toEqual({ spendCny: 6, source: "balance-diff" });
+  });
+
+  it("keeps an instance that only recharged today at zero spend", () => {
+    expect(selectTodaySpend([
+      balance("2026-07-12", 80, "siliconflow_cn", 20),
+      balance("2026-07-13", 30, "siliconflow_cn", 120),
+    ], today).get("siliconflow_cn")).toEqual({ spendCny: 0, source: "balance-diff" });
+  });
+
+  it("does not inherit spend when the instance has not synced today", () => {
+    expect(selectTodaySpend([
+      balance("2026-07-12", 80, "deepseek", 100),
+    ], today).size).toBe(0);
+  });
+
+  it("omits instances without balance or cost signals", () => {
+    expect(selectTodaySpend([
+      { date: "2026-07-13", slot: 30, providerId: "glm", requests: 5, totalTokens: 500, estimatedCostCny: null },
+    ], today).size).toBe(0);
+  });
+
+  it("ignores future-dated records", () => {
+    expect(selectTodaySpend([
+      balance("2026-07-14", 10, "deepseek", 10),
+    ], today).size).toBe(0);
+  });
+});
+
+describe("formatCny", () => {
+  it("rounds to two decimals at display time", () => {
+    expect(formatCny(12)).toBe("¥12.00");
+    expect(formatCny(49.999999)).toBe("¥50.00");
   });
 });
 
