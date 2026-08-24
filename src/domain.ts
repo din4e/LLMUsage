@@ -196,6 +196,22 @@ function providerChangeValue(
   return value != null && Number.isFinite(value) ? value : null;
 }
 
+/** Returns only providers that have at least one real sample for the selected
+ * metric. Trend controls collapse instances to their base provider; recent
+ * changes keep exact instance ids. */
+export function selectProviderIdsWithMetric(
+  records: DailyUsageRecord[],
+  metric: ProviderChangeMetric,
+  collapseInstances: boolean,
+): string[] {
+  const providerIds = new Set<string>();
+  for (const record of records) {
+    if (providerChangeValue(record, metric) == null) continue;
+    providerIds.add(collapseInstances ? baseProviderId(record.providerId) : record.providerId);
+  }
+  return Array.from(providerIds).sort((left, right) => left.localeCompare(right));
+}
+
 /** Compares the two newest persisted samples for exactly one provider
  * instance. Same-day cumulative metrics never cross the local-day boundary;
  * balances are stocks and may be compared across days. */

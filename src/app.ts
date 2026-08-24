@@ -18,6 +18,7 @@ import {
   selectBalanceTrend,
   selectDailyTrend,
   selectTodaySpend,
+  selectProviderIdsWithMetric,
   summarizeProviders,
   type DailyUsageRecord,
   type OnlineDetailSection,
@@ -148,17 +149,9 @@ const APP_VERSION_FALLBACK = "0.1.5";
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
   const selected = trendProvider.value || "all";
-  // Balance mode only offers providers whose history actually carries a
-  // balance sample; token mode keeps the full configured/history list.
-  const recordProviderIds = new Set(dailyUsageRecords.map((record) => baseProviderId(record.providerId)));
-  const balanceProviderIds = new Set(
-    dailyUsageRecords
-      .filter((record) => record.balanceCny != null)
-      .map((record) => baseProviderId(record.providerId)),
+  const providerIds = new Set(
+    selectProviderIdsWithMetric(dailyUsageRecords, selectedTrendMetric, true),
   );
-  const providerIds = selectedTrendMetric === "balance"
-    ? balanceProviderIds
-    : new Set([...Array.from(configuredInstanceIds, baseProviderId), ...recordProviderIds]);
   const options = [new Option(selectedTrendMetric === "balance" ? "合计余额" : "全部提供商", "all")];
   for (const provider of providerDefinitions) {
     if (providerIds.has(provider.id)) options.push(new Option(provider.name, provider.id));
@@ -182,18 +175,25 @@ function renderTrend() {
       : selectedTrendRange === "24h" ? "今日 Token 消耗" : "每日 Token 消耗";
   }
   if (selectedTrendMetric === "balance") {
+    const points = selectBalanceTrend(records, selectedTrendRange, providerId);
     renderBalanceTrendChart(
       trendChart,
       trendEmpty,
       trendDescription,
-      selectBalanceTrend(records, selectedTrendRange, providerId),
+      points,
       selectedName,
       selectedTrendRange === "24h",
     );
+    if (!points.length && trendEmpty) {
+      trendEmpty.textContent = `${selectedName}在所选范围暂无余额历史，请切换范围或同步后再查看。`;
+    }
     return;
   }
   const points = selectDailyTrend(records, selectedTrendRange, providerId);
   renderDailyTrendChart(trendChart, trendEmpty, trendDescription, points, selectedName, selectedTrendRange === "24h");
+  if (!points.length && trendEmpty) {
+    trendEmpty.textContent = `${selectedName}在所选范围暂无 Token 历史，请切换范围或同步后再查看。`;
+  }
 }
 
 async function loadDailyUsage() {

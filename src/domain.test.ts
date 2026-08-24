@@ -18,6 +18,7 @@ import {
   selectBalanceTrend,
   selectDailyTrend,
   selectLatestProviderChange,
+  selectProviderIdsWithMetric,
   selectTodaySpend,
   summarizeProviders,
   type DailyUsageRecord,
@@ -326,6 +327,26 @@ describe("selectLatestProviderChange", () => {
     });
     expect(cost?.delta).toBeCloseTo(0.3);
     expect(selectLatestProviderChange(records, "openai_codex", "balance")).toBeNull();
+  });
+});
+
+describe("selectProviderIdsWithMetric", () => {
+  const records: DailyUsageRecord[] = [
+    { date: "2026-08-24", slot: 70, providerId: "glm", requests: 3, totalTokens: 300, estimatedCostCny: null },
+    { date: "2026-08-24", slot: 70, providerId: "glm_2", requests: 4, totalTokens: 400, estimatedCostCny: null },
+    { date: "2026-08-24", slot: 70, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 20 },
+  ];
+
+  it("keeps balance-only providers out of the Token selector", () => {
+    expect(selectProviderIdsWithMetric(records, "tokens", true)).toEqual(["glm"]);
+  });
+
+  it("keeps Token-only providers out of the balance selector", () => {
+    expect(selectProviderIdsWithMetric(records, "balance", true)).toEqual(["deepseek"]);
+  });
+
+  it("preserves instance ids for the recent-change selector", () => {
+    expect(selectProviderIdsWithMetric(records, "tokens", false)).toEqual(["glm", "glm_2"]);
   });
 });
 
