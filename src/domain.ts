@@ -30,6 +30,12 @@ export interface ProviderRecentChange {
   currentSlot: number | null;
 }
 
+export interface ProviderChangePoint {
+  date: string;
+  slot: number | null;
+  value: number;
+}
+
 export interface DailyTrendPoint extends ProviderMetrics {
   date: string;
   label: string;
@@ -248,6 +254,34 @@ export function selectLatestProviderChange(
     currentDate: current.date,
     currentSlot: current.slot,
   };
+}
+
+/** Returns chronological samples for a compact recent-change curve. Daily
+ * cumulative metrics stay within their newest local day; balances may span
+ * days because they represent a stock value. */
+export function selectProviderChangeSeries(
+  records: DailyUsageRecord[],
+  providerId: string,
+  metric: ProviderChangeMetric,
+  maxPoints = 12,
+): ProviderChangePoint[] {
+  const limit = Number.isFinite(maxPoints) ? Math.max(0, Math.trunc(maxPoints)) : 12;
+  if (limit === 0) return [];
+  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const samples = records
+    .filter((record) => record.providerId === providerId && providerChangeValue(record, metric) != null)
+    .sort((left, right) => left.date.localeCompare(right.date) || slotRank(left) - slotRank(right));
+  const latestDate = samples[samples.length - 1]?.date;
+  if (!latestDate) return [];
+
+  return samples
+    .filter((record) => metric === "balance" || record.date === latestDate)
+    .slice(-limit)
+    .map((record) => ({
+      date: record.date,
+      slot: record.slot,
+      value: providerChangeValue(record, metric) as number,
+    }));
 }
 
 /** Balance curve samples. Balances are stocks, not flows: each (date, slot,

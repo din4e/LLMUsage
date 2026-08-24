@@ -19,6 +19,7 @@ import {
   selectBalanceTrend,
   selectDailyTrend,
   selectLatestProviderChange,
+  selectProviderChangeSeries,
   selectProviderIdsWithMetric,
   selectTodaySpend,
   summarizeProviders,
@@ -328,6 +329,37 @@ describe("selectLatestProviderChange", () => {
     });
     expect(cost?.delta).toBeCloseTo(0.3);
     expect(selectLatestProviderChange(records, "openai_codex", "balance")).toBeNull();
+  });
+});
+
+describe("selectProviderChangeSeries", () => {
+  it("keeps exact-instance cumulative samples from the latest local day and truncates oldest points", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-08-23", slot: 92, providerId: "glm", requests: 8, totalTokens: 8_000, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 8, providerId: "glm", requests: 1, totalTokens: 200, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 12, providerId: "glm_2", requests: 99, totalTokens: 9_900, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 16, providerId: "glm", requests: 2, totalTokens: 500, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 24, providerId: "glm", requests: 3, totalTokens: 900, estimatedCostCny: null },
+    ];
+
+    expect(selectProviderChangeSeries(records, "glm", "tokens", 2)).toEqual([
+      { date: "2026-08-24", slot: 16, value: 500 },
+      { date: "2026-08-24", slot: 24, value: 900 },
+    ]);
+  });
+
+  it("allows balance points to span days while preserving chronological order", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-08-24", slot: 12, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 88 },
+      { date: "2026-08-22", slot: 80, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 100 },
+      { date: "2026-08-23", slot: 40, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 94 },
+    ];
+
+    expect(selectProviderChangeSeries(records, "deepseek", "balance")).toEqual([
+      { date: "2026-08-22", slot: 80, value: 100 },
+      { date: "2026-08-23", slot: 40, value: 94 },
+      { date: "2026-08-24", slot: 12, value: 88 },
+    ]);
   });
 });
 
