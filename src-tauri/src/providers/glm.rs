@@ -8,7 +8,10 @@ const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
 /// GLM Coding Plan TOKENS_LIMIT is a 5-hour rolling usage window.
 /// The monitor API exposes only the next reset time, so the window start is
 /// derived by walking the known duration back from the reset timestamp.
-const GLM_WINDOW_MS: i64 = 5 * 60 * 60 * 1000;
+const GLM_HOUR_MS: i64 = 60 * 60 * 1000;
+const GLM_DAY_MS: i64 = 24 * GLM_HOUR_MS;
+const GLM_WEEK_MS: i64 = 7 * GLM_DAY_MS;
+const GLM_WINDOW_MS: i64 = 5 * GLM_HOUR_MS;
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,7 +166,40 @@ fn is_monitor_datetime(value: &str) -> bool {
 
 fn format_glm_value(value: f64) -> String {
     let formatted = format!("{value:.1}");
-    formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+    formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
+fn is_limit_kind(limit: &QuotaLimit, kind: &str) -> bool {
+    limit.kind.eq_ignore_ascii_case(kind)
+}
+
+/// Maps BigModel's monitor window enum without inventing semantics for values
+/// the adapter has not observed. Legacy TOKENS_LIMIT responses omitted both
+/// fields and represented the original 5-hour window.
+fn quota_window(limit: &QuotaLimit) -> (Option<String>, Option<i64>) {
+    let count = limit.number.filter(|value| *value > 0);
+    match (limit.unit, count) {
+        (Some(3), Some(hours)) => (
+            Some(format!("{hours} 小时")),
+            hours.checked_mul(GLM_HOUR_MS),
+        ),
+        (Some(4), Some(days)) => (Some(format!("{days} 天")), days.checked_mul(GLM_DAY_MS)),
+        (Some(6), Some(weeks)) => (
+            Some(if weeks == 1 {
+                "每周".to_string()
+            } else {
+                format!("{weeks} 周")
+            }),
+            weeks.checked_mul(GLM_WEEK_MS),
+        ),
+        (None, None) if is_limit_kind(limit, "TOKENS_LIMIT") => {
+            (Some("5 小时".to_string()), Some(GLM_WINDOW_MS))
+        }
+        _ => (None, None),
+    }
 }
 
 impl fmt::Display for GlmParseError {
@@ -183,13 +219,17 @@ struct QuotaResponse {
 #[derive(Deserialize)]
 struct QuotaData {
     level: String,
-    limits: Vec<TokenLimit>,
+    limits: Vec<QuotaLimit>,
 }
 
 #[derive(Deserialize)]
-struct TokenLimit {
+struct QuotaLimit {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
+    unit: Option<i64>,
+    #[serde(default)]
+    number: Option<i64>,
     percentage: f64,
     #[serde(rename = "nextResetTime")]
     next_reset_time: i64,
@@ -235,44 +275,75 @@ pub fn parse_snapshot(
 
     let quota_data = quota.data.ok_or(GlmParseError::SchemaMismatch)?;
     let usage_data = usage.data.ok_or(GlmParseError::SchemaMismatch)?;
-    let token_limit = quota_data
-        .limits
+    let QuotaData { level, limits } = quota_data;
+    let selected_kind = if limits
+        .iter()
+        .any(|limit| is_limit_kind(limit, "CREDIT_LIMIT"))
+    {
+        "CREDIT_LIMIT"
+    } else {
+        "TOKENS_LIMIT"
+    };
+    let mut quota_limits = limits
         .into_iter()
-        .filter(|limit| limit.kind == "TOKENS_LIMIT")
-        .min_by_key(|limit| limit.next_reset_time)
-        .ok_or(GlmParseError::SchemaMismatch)?;
+        .filter(|limit| is_limit_kind(limit, selected_kind))
+        .collect::<Vec<_>>();
 
-    if quota_data.level.trim().is_empty()
-        || !token_limit.percentage.is_finite()
-        || !(0.0..=100.0).contains(&token_limit.percentage)
-        || token_limit.next_reset_time <= 0
+    if level.trim().is_empty()
+        || quota_limits.is_empty()
+        || quota_limits.iter().any(|limit| {
+            !limit.percentage.is_finite()
+                || !(0.0..=100.0).contains(&limit.percentage)
+                || limit.next_reset_time <= 0
+        })
     {
         return Err(GlmParseError::SchemaMismatch);
     }
 
-    let used_percent = token_limit.percentage;
-    let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
-    let reset_at = token_limit.next_reset_time;
+    // The dashboard summary represents the shortest quota window. Sorting by
+    // reset time alone can accidentally select the weekly window when its
+    // reset happens before the next rolling 5-hour reset.
+    quota_limits.sort_by_key(|limit| {
+        (
+            quota_window(limit).1.unwrap_or(i64::MAX),
+            limit.next_reset_time,
+        )
+    });
+    let used_percent = quota_limits[0].percentage;
+    let reset_at = quota_limits[0].next_reset_time;
+    let entries = quota_limits
+        .into_iter()
+        .map(|limit| {
+            let remaining_percent = (100.0 - limit.percentage).clamp(0.0, 100.0);
+            let (window, duration_ms) = quota_window(&limit);
+            OnlineDetailEntry {
+                label: if is_limit_kind(&limit, "CREDIT_LIMIT") {
+                    "额度用量".to_string()
+                } else {
+                    "Token 用量".to_string()
+                },
+                used: Some(format_glm_value(limit.percentage)),
+                remaining: Some(format_glm_value(remaining_percent)),
+                limit: Some("100".to_string()),
+                unit: "%".to_string(),
+                used_percent: Some(limit.percentage),
+                window,
+                start_at_ms: duration_ms
+                    .and_then(|duration| limit.next_reset_time.checked_sub(duration)),
+                reset_at_ms: Some(limit.next_reset_time),
+                remaining_ms: None,
+            }
+        })
+        .collect();
     let detail_sections = vec![OnlineDetailSection {
         title: "额度窗口".to_string(),
-        entries: vec![OnlineDetailEntry {
-            label: "Token 用量".to_string(),
-            used: Some(format_glm_value(used_percent)),
-            remaining: Some(format_glm_value(remaining_percent)),
-            limit: Some("100".to_string()),
-            unit: "%".to_string(),
-            used_percent: Some(used_percent),
-            window: Some("5 小时".to_string()),
-            start_at_ms: Some(reset_at - GLM_WINDOW_MS),
-            reset_at_ms: Some(reset_at),
-            remaining_ms: None,
-        }],
+        entries,
     }];
 
     Ok(GlmUsageSnapshot {
-        plan_level: quota_data.level,
+        plan_level: level,
         used_percent,
-        cooldown_ends_at_ms: token_limit.next_reset_time,
+        cooldown_ends_at_ms: reset_at,
         requests: usage_data.total_usage.total_model_call_count,
         total_tokens: usage_data.total_usage.total_tokens_usage,
         detail_sections,
@@ -326,6 +397,117 @@ mod tests {
     }
 
     #[test]
+    fn parses_max_plan_credit_limits_as_five_hour_and_weekly_windows() {
+        // Production shape returned by GLM Max accounts since 2026-08. The
+        // provider renamed token quotas to CREDIT_LIMIT and now returns both
+        // the 5-hour and weekly windows.
+        let quota = r#"{
+          "code": 200,
+          "msg": "操作成功",
+          "data": {
+            "level": "max",
+            "limits": [
+              {
+                "type": "CREDIT_LIMIT",
+                "unit": 3,
+                "number": 5,
+                "usage": 28000,
+                "currentValue": 9898,
+                "remaining": 18102,
+                "percentage": 35,
+                "nextResetTime": 1787577676307
+              },
+              {
+                "type": "CREDIT_LIMIT",
+                "unit": 6,
+                "number": 1,
+                "usage": 140000,
+                "currentValue": 9898,
+                "remaining": 130102,
+                "percentage": 7,
+                "nextResetTime": 1788163653998
+              }
+            ]
+          }
+        }"#;
+        let usage = r#"{
+          "code": 200,
+          "msg": "操作成功",
+          "data": {
+            "totalUsage": {
+              "totalModelCallCount": 12,
+              "totalTokensUsage": 34567
+            }
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(quota, usage).expect("valid GLM Max response");
+
+        assert_eq!(snapshot.plan_level, "max");
+        assert_eq!(snapshot.used_percent, 35.0);
+        assert_eq!(snapshot.cooldown_ends_at_ms, 1_787_577_676_307);
+        assert_eq!(snapshot.requests, 12);
+        assert_eq!(snapshot.total_tokens, 34_567);
+
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].window.as_deref(), Some("5 小时"));
+        assert_eq!(entries[0].used_percent, Some(35.0));
+        assert_eq!(
+            entries[0].start_at_ms,
+            Some(1_787_577_676_307 - GLM_WINDOW_MS)
+        );
+        assert_eq!(entries[1].window.as_deref(), Some("每周"));
+        assert_eq!(entries[1].used_percent, Some(7.0));
+        assert_eq!(
+            entries[1].start_at_ms,
+            Some(1_788_163_653_998 - 7 * 24 * 60 * 60 * 1000)
+        );
+    }
+
+    #[test]
+    fn prefers_current_credit_limits_when_old_and_new_shapes_coexist() {
+        let quota = r#"{
+          "code": 200,
+          "data": {
+            "level": "max",
+            "limits": [
+              {
+                "type": "TOKENS_LIMIT",
+                "percentage": 91,
+                "nextResetTime": 1787577000000
+              },
+              {
+                "type": "CREDIT_LIMIT",
+                "unit": 3,
+                "number": 5,
+                "percentage": 35,
+                "nextResetTime": 1787577676307
+              }
+            ]
+          }
+        }"#;
+        let usage = r#"{
+          "code": 200,
+          "data": {
+            "totalUsage": {
+              "totalModelCallCount": 1,
+              "totalTokensUsage": 2
+            }
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(quota, usage).expect("current shape wins");
+
+        assert_eq!(snapshot.used_percent, 35.0);
+        assert_eq!(snapshot.detail_sections[0].entries.len(), 1);
+        assert_eq!(
+            snapshot.detail_sections[0].entries[0].window.as_deref(),
+            Some("5 小时")
+        );
+    }
+
+    #[test]
     fn maps_missing_coding_plan_rejections_to_a_dedicated_error() {
         // Verbatim production body returned to a valid pay-as-you-go key.
         let no_plan = r#"{"code":500,"msg":"当前用户不存在coding plan","success":false}"#;
@@ -354,10 +536,10 @@ mod tests {
     #[test]
     fn keeps_generic_rejection_for_other_error_bodies() {
         let quota = r#"{"code":1002,"msg":"Authorization Token invalid","success":false}"#;
-        let usage = r#"{"code":200,"data":{"totalUsage":{"totalModelCallCount":0,"totalTokensUsage":0}}}"#;
+        let usage =
+            r#"{"code":200,"data":{"totalUsage":{"totalModelCallCount":0,"totalTokensUsage":0}}}"#;
 
-        let error =
-            parse_snapshot(quota, usage).expect_err("other rejections stay generic");
+        let error = parse_snapshot(quota, usage).expect_err("other rejections stay generic");
 
         assert_eq!(error, GlmParseError::ApiRejected);
     }
