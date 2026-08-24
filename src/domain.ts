@@ -16,6 +16,20 @@ export interface DailyUsageRecord {
   balanceCny?: number | null;
 }
 
+export type ProviderChangeMetric = "requests" | "tokens" | "balance" | "cost";
+
+export interface ProviderRecentChange {
+  providerId: string;
+  metric: ProviderChangeMetric;
+  previousValue: number;
+  currentValue: number;
+  delta: number;
+  previousDate: string;
+  previousSlot: number | null;
+  currentDate: string;
+  currentSlot: number | null;
+}
+
 export interface DailyTrendPoint extends ProviderMetrics {
   date: string;
   label: string;
@@ -166,6 +180,58 @@ export function selectDailyTrend(
   }))
     .filter((point) => point.totalTokens !== null)
     .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function providerChangeValue(
+  record: DailyUsageRecord,
+  metric: ProviderChangeMetric,
+): number | null {
+  const value = metric === "requests"
+    ? record.requests
+    : metric === "tokens"
+      ? record.totalTokens
+      : metric === "balance"
+        ? record.balanceCny
+        : record.estimatedCostCny;
+  return value != null && Number.isFinite(value) ? value : null;
+}
+
+/** Compares the two newest persisted samples for exactly one provider
+ * instance. Same-day cumulative metrics never cross the local-day boundary;
+ * balances are stocks and may be compared across days. */
+export function selectLatestProviderChange(
+  records: DailyUsageRecord[],
+  providerId: string,
+  metric: ProviderChangeMetric,
+): ProviderRecentChange | null {
+  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const samples = records
+    .filter((record) => record.providerId === providerId && providerChangeValue(record, metric) != null)
+    .sort((left, right) => left.date.localeCompare(right.date) || slotRank(left) - slotRank(right));
+  const current = samples[samples.length - 1];
+  if (!current) return null;
+
+  const previous = samples
+    .slice(0, -1)
+    .reverse()
+    .find((record) => metric === "balance" || record.date === current.date);
+  if (!previous) return null;
+
+  const previousValue = providerChangeValue(previous, metric);
+  const currentValue = providerChangeValue(current, metric);
+  if (previousValue == null || currentValue == null) return null;
+
+  return {
+    providerId,
+    metric,
+    previousValue,
+    currentValue,
+    delta: currentValue - previousValue,
+    previousDate: previous.date,
+    previousSlot: previous.slot,
+    currentDate: current.date,
+    currentSlot: current.slot,
+  };
 }
 
 /** Balance curve samples. Balances are stocks, not flows: each (date, slot,

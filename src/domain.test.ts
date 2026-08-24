@@ -17,6 +17,7 @@ import {
   localQuarterSlot,
   selectBalanceTrend,
   selectDailyTrend,
+  selectLatestProviderChange,
   selectTodaySpend,
   summarizeProviders,
   type DailyUsageRecord,
@@ -261,6 +262,70 @@ describe("selectTodaySpend", () => {
     expect(selectTodaySpend([
       balance("2026-07-14", 10, "deepseek", 10),
     ], today).size).toBe(0);
+  });
+});
+
+describe("selectLatestProviderChange", () => {
+  it("isolates one provider instance and diffs the latest same-day request samples", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-08-24", slot: 20, providerId: "glm", requests: 10, totalTokens: 1_000, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 24, providerId: "glm_2", requests: 99, totalTokens: 9_900, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 28, providerId: "glm", requests: 13, totalTokens: 1_600, estimatedCostCny: null },
+    ];
+
+    expect(selectLatestProviderChange(records, "glm", "requests")).toEqual({
+      providerId: "glm",
+      metric: "requests",
+      previousValue: 10,
+      currentValue: 13,
+      delta: 3,
+      previousDate: "2026-08-24",
+      previousSlot: 20,
+      currentDate: "2026-08-24",
+      currentSlot: 28,
+    });
+  });
+
+  it("never compares cumulative Token values across a local-day reset", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-08-23", slot: 92, providerId: "glm", requests: 20, totalTokens: 8_000, estimatedCostCny: null },
+      { date: "2026-08-24", slot: 4, providerId: "glm", requests: 1, totalTokens: 200, estimatedCostCny: null },
+    ];
+
+    expect(selectLatestProviderChange(records, "glm", "tokens")).toBeNull();
+  });
+
+  it("compares balances across days and keeps consumption as a negative delta", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-08-24", slot: 12, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 88.5 },
+      { date: "2026-08-23", slot: 80, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 100 },
+      { date: "2026-08-24", slot: 8, providerId: "deepseek", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 90 },
+    ];
+
+    expect(selectLatestProviderChange(records, "deepseek", "balance")).toMatchObject({
+      previousValue: 90,
+      currentValue: 88.5,
+      delta: -1.5,
+      previousDate: "2026-08-24",
+      previousSlot: 8,
+      currentDate: "2026-08-24",
+      currentSlot: 12,
+    });
+  });
+
+  it("diffs official cost within the day and returns null for unsupported metrics", () => {
+    const records: DailyUsageRecord[] = [
+      { date: "2026-08-24", slot: 20, providerId: "openai_codex", requests: 2, totalTokens: 200, estimatedCostCny: 0.5 },
+      { date: "2026-08-24", slot: 24, providerId: "openai_codex", requests: 3, totalTokens: 350, estimatedCostCny: 0.8 },
+    ];
+
+    const cost = selectLatestProviderChange(records, "openai_codex", "cost");
+    expect(cost).toMatchObject({
+      previousValue: 0.5,
+      currentValue: 0.8,
+    });
+    expect(cost?.delta).toBeCloseTo(0.3);
+    expect(selectLatestProviderChange(records, "openai_codex", "balance")).toBeNull();
   });
 });
 
