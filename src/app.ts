@@ -9,6 +9,8 @@ import {
   formatCny,
   formatCooldown,
   formatInteger,
+  formatProviderChangeValue,
+  formatQuarterSlot,
   instanceIndexOf,
   isProviderInstanceId,
   localDateKey,
@@ -17,11 +19,13 @@ import {
   localQuarterSlot,
   selectBalanceTrend,
   selectDailyTrend,
+  selectLatestProviderChange,
   selectTodaySpend,
   selectProviderIdsWithMetric,
   summarizeProviders,
   type DailyUsageRecord,
   type OnlineDetailSection,
+  type ProviderChangeMetric,
   type TrendRange,
 } from "./domain";
 import {
@@ -111,6 +115,16 @@ const trendTitle = byId<HTMLElement>("trend-title");
 const trendChart = document.getElementById("trend-chart") as SVGSVGElement | null;
 const trendEmpty = byId<HTMLElement>("trend-empty");
 const trendDescription = byId<HTMLElement>("trend-description");
+const recentChangeProvider = byId<HTMLSelectElement>("recent-change-provider");
+const recentChangeMetric = byId<HTMLElement>("recent-change-metric");
+const recentChangeValues = byId<HTMLElement>("recent-change-values");
+const recentChangeEmpty = byId<HTMLElement>("recent-change-empty");
+const recentChangeLabel = byId<HTMLElement>("recent-change-label");
+const recentChangeDelta = byId<HTMLElement>("recent-change-delta");
+const recentChangeDirection = byId<HTMLElement>("recent-change-direction");
+const recentChangeCurrent = byId<HTMLElement>("recent-change-current");
+const recentChangePrevious = byId<HTMLElement>("recent-change-previous");
+const recentChangePeriod = byId<HTMLElement>("recent-change-period");
 const confirmDialog = byId<HTMLDialogElement>("confirm-dialog");
 const confirmForm = byId<HTMLFormElement>("confirm-form");
 const confirmTitle = byId<HTMLElement>("confirm-title");
@@ -144,6 +158,7 @@ let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
 let selectedTrendMetric: "tokens" | "balance" = "tokens";
+let selectedRecentChangeMetric: ProviderChangeMetric = "tokens";
 const APP_VERSION_FALLBACK = "0.1.5";
 
 function renderTrendProviderOptions() {
@@ -196,6 +211,92 @@ function renderTrend() {
   }
 }
 
+const recentChangeMetricLabels: Record<ProviderChangeMetric, string> = {
+  requests: "请求",
+  tokens: "Token",
+  balance: "余额",
+  cost: "成本",
+};
+
+function renderRecentChangeProviderOptions() {
+  if (!recentChangeProvider) return;
+  const selected = recentChangeProvider.value;
+  const options = orderedConfiguredInstances().map(
+    (instanceId) => new Option(providerName(instanceId), instanceId),
+  );
+  recentChangeProvider.replaceChildren(...options);
+  if (options.some((option) => option.value === selected)) recentChangeProvider.value = selected;
+}
+
+function recentSampleLabel(date: string, slot: number | null): string {
+  const dateLabel = date.slice(5).replace("-", "/");
+  return slot == null ? dateLabel : `${dateLabel} ${formatQuarterSlot(slot)}`;
+}
+
+function renderRecentChange() {
+  const instanceId = recentChangeProvider?.value;
+  if (!instanceId) {
+    if (recentChangeValues) recentChangeValues.hidden = true;
+    if (recentChangeEmpty) {
+      recentChangeEmpty.hidden = false;
+      recentChangeEmpty.textContent = "添加并同步 Provider 后，可单独查看最近变化。";
+    }
+    return;
+  }
+
+  const change = selectLatestProviderChange(
+    dailyUsageRecords,
+    instanceId,
+    selectedRecentChangeMetric,
+  );
+  if (!change) {
+    if (recentChangeValues) recentChangeValues.hidden = true;
+    if (recentChangeEmpty) {
+      recentChangeEmpty.hidden = false;
+      recentChangeEmpty.textContent = `${providerName(instanceId)} 的${recentChangeMetricLabels[selectedRecentChangeMetric]}至少需要两条可比采样。`;
+    }
+    return;
+  }
+
+  if (recentChangeEmpty) recentChangeEmpty.hidden = true;
+  if (recentChangeValues) recentChangeValues.hidden = false;
+  if (recentChangeLabel) {
+    recentChangeLabel.textContent = `${recentChangeMetricLabels[selectedRecentChangeMetric]}变化`;
+  }
+  if (recentChangeDelta) {
+    recentChangeDelta.textContent = formatProviderChangeValue(
+      selectedRecentChangeMetric,
+      change.delta,
+      true,
+    );
+    recentChangeDelta.dataset.direction = change.delta > 0
+      ? "increase"
+      : change.delta < 0 ? "decrease" : "steady";
+  }
+  if (recentChangeDirection) {
+    recentChangeDirection.textContent = change.delta > 0
+      ? "较上次增加"
+      : change.delta < 0 ? "较上次减少" : "较上次无变化";
+  }
+  if (recentChangeCurrent) {
+    recentChangeCurrent.textContent = formatProviderChangeValue(
+      selectedRecentChangeMetric,
+      change.currentValue,
+      false,
+    );
+  }
+  if (recentChangePrevious) {
+    recentChangePrevious.textContent = formatProviderChangeValue(
+      selectedRecentChangeMetric,
+      change.previousValue,
+      false,
+    );
+  }
+  if (recentChangePeriod) {
+    recentChangePeriod.textContent = `${recentSampleLabel(change.previousDate, change.previousSlot)} → ${recentSampleLabel(change.currentDate, change.currentSlot)}`;
+  }
+}
+
 async function loadDailyUsage() {
   if (isTauri()) {
     try {
@@ -207,6 +308,8 @@ async function loadDailyUsage() {
   renderTrendProviderOptions();
   renderTrend();
   renderTodaySpend();
+  renderRecentChangeProviderOptions();
+  renderRecentChange();
 }
 
 /** Writes the per-row 「今日消耗」 figures and the aggregate metric tile.
@@ -402,6 +505,8 @@ function applyRowIdentity(row: HTMLElement, instanceId: string) {
 
 function applyInstanceIdentities(instanceId: string) {
   for (const row of providerRows(instanceId)) applyRowIdentity(row, instanceId);
+  renderRecentChangeProviderOptions();
+  renderRecentChange();
 }
 
 /** Wires drag-to-reorder plus an Alt+arrow keyboard equivalent onto a row. */
@@ -585,6 +690,8 @@ function renderProviderVisibility() {
   setText("providers-configured-count", String(configuredInstanceIds.size));
   renderProviderCatalog();
   renderTrendProviderOptions();
+  renderRecentChangeProviderOptions();
+  renderRecentChange();
   renderTotals();
 }
 
@@ -1376,6 +1483,16 @@ trendRange?.addEventListener("click", (event) => {
     item.setAttribute("aria-pressed", String(item === button));
   }
   renderTrend();
+});
+recentChangeProvider?.addEventListener("change", renderRecentChange);
+recentChangeMetric?.addEventListener("click", (event) => {
+  const button = (event.target as Element).closest<HTMLButtonElement>("button[data-change-metric]");
+  if (!button) return;
+  selectedRecentChangeMetric = button.dataset.changeMetric as ProviderChangeMetric;
+  for (const item of recentChangeMetric.querySelectorAll<HTMLButtonElement>("button[data-change-metric]")) {
+    item.setAttribute("aria-pressed", String(item === button));
+  }
+  renderRecentChange();
 });
 window.setInterval(updateCooldown, 30_000);
 void initializeWindowControls();

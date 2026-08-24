@@ -407,6 +407,20 @@ export function formatCny(value: number): string {
   return `¥${value.toFixed(2)}`;
 }
 
+export function formatProviderChangeValue(
+  metric: ProviderChangeMetric,
+  value: number,
+  signed: boolean,
+): string {
+  if (!Number.isFinite(value)) return "—";
+  const magnitude = metric === "balance" || metric === "cost"
+    ? formatCny(Math.abs(value))
+    : formatInteger(Math.abs(value));
+  if (value < 0) return `-${magnitude}`;
+  if (signed && value > 0) return `+${magnitude}`;
+  return magnitude;
+}
+
 export function formatQuotaDetailValue(entry: OnlineDetailEntry): string {
   const values: string[] = [];
   if (entry.used != null) values.push(`已用 ${entry.used}${entry.unit}`);

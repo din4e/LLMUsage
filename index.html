@@ -75,6 +75,35 @@
           <p class="trend-description" id="trend-description">本地保存的非敏感日汇总 · 暂无历史数据</p>
         </section>
 
+        <section class="recent-change-panel" aria-labelledby="recent-change-title">
+          <header class="trend-heading recent-change-heading">
+            <div><p class="eyebrow">LATEST DELTA</p><h2 id="recent-change-title">最近变化</h2></div>
+            <div class="trend-controls recent-change-controls">
+              <label for="recent-change-provider">Provider</label>
+              <select id="recent-change-provider" aria-label="最近变化 Provider"></select>
+              <div class="range-switch" id="recent-change-metric" aria-label="最近变化指标">
+                <button type="button" data-change-metric="requests" aria-pressed="false">请求</button>
+                <button type="button" data-change-metric="tokens" aria-pressed="true">Token</button>
+                <button type="button" data-change-metric="balance" aria-pressed="false">余额</button>
+                <button type="button" data-change-metric="cost" aria-pressed="false">成本</button>
+              </div>
+            </div>
+          </header>
+          <div class="recent-change-values" id="recent-change-values" role="status" aria-live="polite" hidden>
+            <div class="recent-change-primary">
+              <span id="recent-change-label">Token 变化</span>
+              <strong id="recent-change-delta">—</strong>
+              <small id="recent-change-direction">等待采样</small>
+            </div>
+            <dl class="recent-change-comparison">
+              <div><dt>当前值</dt><dd id="recent-change-current">—</dd></div>
+              <div><dt>上次值</dt><dd id="recent-change-previous">—</dd></div>
+              <div><dt>采样区间</dt><dd id="recent-change-period">—</dd></div>
+            </dl>
+          </div>
+          <p class="recent-change-empty" id="recent-change-empty" role="status">至少需要两条可比历史采样。</p>
+        </section>
+
         <section class="section-heading">
           <h2>供应商状态</h2>
           <p>在线用量优先 · 实验接口会单独标注</p>

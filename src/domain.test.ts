@@ -5,6 +5,7 @@ import {
   credentialHint,
   formatCooldown,
   formatCny,
+  formatProviderChangeValue,
   formatDuration,
   formatInteger,
   formatQuotaDetailValue,
@@ -347,6 +348,20 @@ describe("selectProviderIdsWithMetric", () => {
 
   it("preserves instance ids for the recent-change selector", () => {
     expect(selectProviderIdsWithMetric(records, "tokens", false)).toEqual(["glm", "glm_2"]);
+  });
+});
+
+describe("formatProviderChangeValue", () => {
+  it("formats signed count and Token deltas", () => {
+    expect(formatProviderChangeValue("requests", 3, true)).toBe("+3");
+    expect(formatProviderChangeValue("tokens", -1_200, true)).toBe("-1,200");
+    expect(formatProviderChangeValue("tokens", 0, true)).toBe("0");
+  });
+
+  it("formats current and signed currency values", () => {
+    expect(formatProviderChangeValue("balance", 88.5, false)).toBe("¥88.50");
+    expect(formatProviderChangeValue("balance", -1.5, true)).toBe("-¥1.50");
+    expect(formatProviderChangeValue("cost", 0.3, true)).toBe("+¥0.30");
   });
 });
 
