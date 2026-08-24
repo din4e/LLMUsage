@@ -95,11 +95,14 @@
               <strong id="recent-change-delta">—</strong>
               <small id="recent-change-direction">等待采样</small>
             </div>
-            <dl class="recent-change-comparison">
-              <div><dt>当前值</dt><dd id="recent-change-current">—</dd></div>
-              <div><dt>上次值</dt><dd id="recent-change-previous">—</dd></div>
-              <div><dt>采样区间</dt><dd id="recent-change-period">—</dd></div>
-            </dl>
+            <div class="recent-change-detail">
+              <svg id="recent-change-chart" class="recent-change-chart" viewBox="0 0 600 98" role="img" aria-label="最近变化曲线"></svg>
+              <dl class="recent-change-comparison">
+                <div><dt>当前值</dt><dd id="recent-change-current">—</dd></div>
+                <div><dt>上次值</dt><dd id="recent-change-previous">—</dd></div>
+                <div><dt>采样区间</dt><dd id="recent-change-period">—</dd></div>
+              </dl>
+            </div>
           </div>
           <p class="recent-change-empty" id="recent-change-empty" role="status">至少需要两条可比历史采样。</p>
         </section>

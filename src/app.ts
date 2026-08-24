@@ -20,6 +20,7 @@ import {
   selectBalanceTrend,
   selectDailyTrend,
   selectLatestProviderChange,
+  selectProviderChangeSeries,
   selectTodaySpend,
   selectProviderIdsWithMetric,
   summarizeProviders,
@@ -48,7 +49,7 @@ import {
   type ImportEntryResult,
 } from "./transfer";
 import { initializeWindowControls } from "./window-controls";
-import { renderBalanceTrendChart, renderDailyTrendChart } from "./trend-chart";
+import { renderBalanceTrendChart, renderDailyTrendChart, renderProviderChangeChart } from "./trend-chart";
 import "./styles.css";
 
 interface GlmSnapshot {
@@ -125,6 +126,7 @@ const recentChangeDirection = byId<HTMLElement>("recent-change-direction");
 const recentChangeCurrent = byId<HTMLElement>("recent-change-current");
 const recentChangePrevious = byId<HTMLElement>("recent-change-previous");
 const recentChangePeriod = byId<HTMLElement>("recent-change-period");
+const recentChangeChart = document.getElementById("recent-change-chart") as SVGSVGElement | null;
 const confirmDialog = byId<HTMLDialogElement>("confirm-dialog");
 const confirmForm = byId<HTMLFormElement>("confirm-form");
 const confirmTitle = byId<HTMLElement>("confirm-title");
@@ -236,6 +238,7 @@ function recentSampleLabel(date: string, slot: number | null): string {
 function renderRecentChange() {
   const instanceId = recentChangeProvider?.value;
   if (!instanceId) {
+    recentChangeChart?.replaceChildren();
     if (recentChangeValues) recentChangeValues.hidden = true;
     if (recentChangeEmpty) {
       recentChangeEmpty.hidden = false;
@@ -250,6 +253,7 @@ function renderRecentChange() {
     selectedRecentChangeMetric,
   );
   if (!change) {
+    recentChangeChart?.replaceChildren();
     if (recentChangeValues) recentChangeValues.hidden = true;
     if (recentChangeEmpty) {
       recentChangeEmpty.hidden = false;
@@ -260,6 +264,14 @@ function renderRecentChange() {
 
   if (recentChangeEmpty) recentChangeEmpty.hidden = true;
   if (recentChangeValues) recentChangeValues.hidden = false;
+  if (recentChangeChart) {
+    renderProviderChangeChart(
+      recentChangeChart,
+      selectProviderChangeSeries(dailyUsageRecords, instanceId, selectedRecentChangeMetric),
+      selectedRecentChangeMetric,
+      providerName(instanceId),
+    );
+  }
   if (recentChangeLabel) {
     recentChangeLabel.textContent = `${recentChangeMetricLabels[selectedRecentChangeMetric]}变化`;
   }

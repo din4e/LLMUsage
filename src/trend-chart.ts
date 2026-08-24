@@ -1,4 +1,12 @@
-import { formatInteger, type BalanceTrendPoint, type DailyTrendPoint } from "./domain";
+import {
+  formatInteger,
+  formatProviderChangeValue,
+  formatQuarterSlot,
+  type BalanceTrendPoint,
+  type DailyTrendPoint,
+  type ProviderChangeMetric,
+  type ProviderChangePoint,
+} from "./domain";
 
 /** Compact ¥ label for the balance axis: ¥1234.5 → ¥1.2k. */
 function formatCurrencyAxis(value: number): string {
@@ -12,6 +20,94 @@ function formatCurrencyExact(value: number): string {
 
 const svgElement = <K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] =>
   document.createElementNS("http://www.w3.org/2000/svg", name);
+
+const providerChangeMetricLabels: Record<ProviderChangeMetric, string> = {
+  requests: "请求",
+  tokens: "Token",
+  balance: "余额",
+  cost: "成本",
+};
+
+function providerChangePointLabel(point: ProviderChangePoint): string {
+  const date = point.date.slice(5).replace("-", "/");
+  return point.slot == null ? date : `${date} ${formatQuarterSlot(point.slot)}`;
+}
+
+export function renderProviderChangeChart(
+  chart: SVGSVGElement,
+  points: ProviderChangePoint[],
+  metric: ProviderChangeMetric,
+  selectedName: string,
+) {
+  chart.replaceChildren();
+  if (points.length < 2) {
+    chart.setAttribute("aria-label", `${selectedName} 的${providerChangeMetricLabels[metric]}曲线至少需要两个采样点`);
+    return;
+  }
+
+  const width = 600;
+  const height = 98;
+  const plot = { left: 12, right: 12, top: 10, bottom: 22 };
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
+  const values = points.map((point) => point.value);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const spread = maxValue - minValue;
+  const x = (index: number) => plot.left + (index / (points.length - 1)) * plotWidth;
+  const y = (value: number) => spread === 0
+    ? plot.top + plotHeight / 2
+    : plot.top + ((maxValue - value) / spread) * plotHeight;
+
+  for (const tickY of [plot.top, plot.top + plotHeight / 2, plot.top + plotHeight]) {
+    const grid = svgElement("line");
+    grid.setAttribute("class", "recent-change-chart-grid");
+    grid.setAttribute("x1", String(plot.left));
+    grid.setAttribute("x2", String(width - plot.right));
+    grid.setAttribute("y1", String(tickY));
+    grid.setAttribute("y2", String(tickY));
+    chart.append(grid);
+  }
+
+  const coords = points.map((point, index) => [x(index), y(point.value)] as const);
+  const path = svgElement("path");
+  path.setAttribute("class", "recent-change-chart-line");
+  path.setAttribute("d", coords.map(([pointX, pointY], index) => `${index ? "L" : "M"}${pointX},${pointY}`).join(" "));
+  chart.append(path);
+
+  const lastIndex = points.length - 1;
+  points.forEach((point, index) => {
+    const [pointX, pointY] = coords[index]!;
+    const description = `${selectedName}，${providerChangePointLabel(point)}，${providerChangeMetricLabels[metric]} ${formatProviderChangeValue(metric, point.value, false)}`;
+    const circle = svgElement("circle");
+    circle.setAttribute("class", "recent-change-chart-point");
+    if (index === lastIndex) circle.classList.add("latest");
+    circle.setAttribute("cx", String(pointX));
+    circle.setAttribute("cy", String(pointY));
+    circle.setAttribute("r", index === lastIndex ? "4" : "3");
+    circle.setAttribute("tabindex", "0");
+    circle.setAttribute("aria-label", description);
+    const title = svgElement("title");
+    title.textContent = description;
+    circle.append(title);
+    chart.append(circle);
+  });
+
+  for (const index of new Set([0, Math.floor(lastIndex / 2), lastIndex])) {
+    const label = svgElement("text");
+    label.setAttribute("class", "recent-change-chart-label");
+    label.setAttribute("x", String(coords[index]![0]));
+    label.setAttribute("y", String(height - 5));
+    label.setAttribute("text-anchor", index === 0 ? "start" : index === lastIndex ? "end" : "middle");
+    label.textContent = providerChangePointLabel(points[index]!);
+    chart.append(label);
+  }
+
+  chart.setAttribute(
+    "aria-label",
+    `${selectedName}最近${providerChangeMetricLabels[metric]}曲线，共 ${points.length} 个采样点`,
+  );
+}
 
 /** Catmull-Rom spline converted to cubic beziers, clamped to the plot box so
  *  smoothing never draws outside the value range. */
