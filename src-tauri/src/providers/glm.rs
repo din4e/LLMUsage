@@ -17,7 +17,10 @@ const GLM_WINDOW_MS: i64 = 5 * GLM_HOUR_MS;
 #[serde(rename_all = "camelCase")]
 pub struct GlmUsageSnapshot {
     pub plan_level: String,
+    /// Percent of the tightest visible window (largest usage), so a fresh
+    /// 5-hour reset never hides a heavily consumed weekly window.
     pub used_percent: f64,
+    /// Reset time of the window `used_percent` came from.
     pub cooldown_ends_at_ms: i64,
     pub requests: u64,
     pub total_tokens: u64,
@@ -300,17 +303,38 @@ pub fn parse_snapshot(
         return Err(GlmParseError::SchemaMismatch);
     }
 
-    // The dashboard summary represents the shortest quota window. Sorting by
-    // reset time alone can accidentally select the weekly window when its
-    // reset happens before the next rolling 5-hour reset.
+    // The dashboard summary represents the tightest window — the one that
+    // runs out first. GLM Max returns both a rolling 5-hour and a weekly
+    // CREDIT_LIMIT; right after a 5-hour reset the fresh window can sit near
+    // 1% while the weekly window is far more consumed, and summarizing the
+    // shortest window then made the row look stuck near zero. Percentages
+    // outside 0..=100 were rejected above, so partial_cmp never sees a NaN;
+    // equal percentages fall back to the shorter window, then the earlier
+    // reset. Detail entries below keep their own window-length order.
     quota_limits.sort_by_key(|limit| {
         (
             quota_window(limit).1.unwrap_or(i64::MAX),
             limit.next_reset_time,
         )
     });
-    let used_percent = quota_limits[0].percentage;
-    let reset_at = quota_limits[0].next_reset_time;
+    let summary = quota_limits
+        .iter()
+        .min_by(|left, right| {
+            right
+                .percentage
+                .partial_cmp(&left.percentage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    quota_window(left)
+                        .1
+                        .unwrap_or(i64::MAX)
+                        .cmp(&quota_window(right).1.unwrap_or(i64::MAX))
+                })
+                .then_with(|| left.next_reset_time.cmp(&right.next_reset_time))
+        })
+        .expect("non-empty limits checked above");
+    let used_percent = summary.percentage;
+    let reset_at = summary.next_reset_time;
     let entries = quota_limits
         .into_iter()
         .map(|limit| {
@@ -463,6 +487,57 @@ mod tests {
             entries[1].start_at_ms,
             Some(1_788_163_653_998 - 7 * 24 * 60 * 60 * 1000)
         );
+    }
+
+    #[test]
+    fn summarizes_the_tightest_window_when_a_fresh_5h_reset_hides_weekly_usage() {
+        // Verbatim shape from a local GLM Max account on 2026-08-28: the
+        // 5-hour window had just reset to 1% while the weekly window sat at
+        // 63%. Summarizing the shortest window reported 1% and made the row
+        // look untracked; the tightest window is the honest summary.
+        let quota = r#"{
+          "code": 200,
+          "msg": "操作成功",
+          "data": {
+            "level": "max",
+            "limits": [
+              {
+                "type": "CREDIT_LIMIT",
+                "unit": 3,
+                "number": 5,
+                "percentage": 1,
+                "nextResetTime": 1787935739723
+              },
+              {
+                "type": "CREDIT_LIMIT",
+                "unit": 6,
+                "number": 1,
+                "percentage": 63,
+                "nextResetTime": 1788163653998
+              }
+            ]
+          }
+        }"#;
+        let usage = r#"{
+          "code": 200,
+          "data": {
+            "totalUsage": {
+              "totalModelCallCount": 2130,
+              "totalTokensUsage": 320663097
+            }
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(quota, usage).expect("valid GLM Max response");
+
+        assert_eq!(snapshot.used_percent, 63.0);
+        assert_eq!(snapshot.cooldown_ends_at_ms, 1_788_163_653_998);
+        // Detail order stays window-length based: the 5-hour entry first.
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries[0].window.as_deref(), Some("5 小时"));
+        assert_eq!(entries[0].used_percent, Some(1.0));
+        assert_eq!(entries[1].window.as_deref(), Some("每周"));
+        assert_eq!(entries[1].used_percent, Some(63.0));
     }
 
     #[test]
