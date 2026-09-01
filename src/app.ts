@@ -150,6 +150,8 @@ const configuredInstanceIds = new Set<string>();
 let selectedInstance = "glm";
 const glmSnapshots = new Map<string, GlmSnapshot>();
 const onlineSnapshots = new Map<string, OnlineSnapshot>();
+/** Instance ids whose latest sync failed; their rows show cached data. */
+const failedSyncInstances = new Map<string, string>();
 const PROVIDER_ORDER_KEY = "llm-usage:provider-order";
 const INSTANCE_REMARKS_KEY = "llm-usage:instance-remarks";
 const instanceRemarks = loadSavedInstanceRemarks();
@@ -889,10 +891,37 @@ function renderTotals() {
 
 function updateCooldown() {
   for (const [instanceId, snapshot] of glmSnapshots) {
+    // Failed instances keep their sync-error hint; a stale cooldown countdown
+    // computed from cached data would read as live again.
+    if (failedSyncInstances.has(instanceId)) continue;
     for (const row of providerRows(instanceId)) {
       const hint = row.querySelector<HTMLElement>(".quota-hint");
       if (hint) hint.textContent = formatCooldown(snapshot.cooldownEndsAtMs);
     }
+  }
+}
+
+/**
+ * Marks a provider's rows as failed so the last cached numbers never
+ * masquerade as live data; the full error stays on the row via tooltip.
+ */
+function markSyncFailed(instanceId: string, message: string) {
+  failedSyncInstances.set(instanceId, message);
+  for (const row of providerRows(instanceId)) {
+    row.classList.add("sync-failed");
+    const hint = row.querySelector<HTMLElement>(".quota-hint");
+    if (hint) {
+      hint.textContent = "同步失败 · 显示缓存数据";
+      hint.title = message;
+    }
+  }
+}
+
+function clearSyncFailed(instanceId: string) {
+  if (!failedSyncInstances.delete(instanceId)) return;
+  for (const row of providerRows(instanceId)) {
+    row.classList.remove("sync-failed");
+    row.querySelector<HTMLElement>(".quota-hint")?.removeAttribute("title");
   }
 }
 
@@ -910,10 +939,13 @@ async function syncGlm(instanceId: string): Promise<boolean> {
       slot: localQuarterSlot(),
       ...localDayRange(),
     }));
+    clearSyncFailed(instanceId);
     return true;
   } catch (reason) {
     const error = reason as CommandError;
-    setStatus(error.message ?? "同步失败，请稍后重试", "error");
+    const message = error.message ?? "同步失败，请稍后重试";
+    setStatus(message, "error");
+    markSyncFailed(instanceId, message);
     return false;
   }
 }
@@ -928,9 +960,12 @@ async function syncOnline(instanceId: string): Promise<boolean> {
       slot: localQuarterSlot(),
       ...localDayRangeMs(),
     }));
+    clearSyncFailed(instanceId);
     return true;
   } catch (reason) {
-    setStatus(instanceError(instanceId, "同步失败", reason), "error");
+    const message = instanceError(instanceId, "同步失败", reason);
+    setStatus(message, "error");
+    markSyncFailed(instanceId, message);
     return false;
   }
 }

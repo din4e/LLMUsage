@@ -346,6 +346,12 @@ select:hover { border-color: var(--line-strong); }
 .provider-row.dragging { opacity: .45; }
 .provider-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .provider-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* Failed sync: cached numbers stay visible but dimmed; the danger edge and
+   hint make clear they are not live. */
+.provider-row.sync-failed { box-shadow: inset 2px 0 0 var(--danger); }
+.provider-row.sync-failed .usage-value,
+.provider-row.sync-failed .quota-value { color: var(--muted); }
+.provider-row.sync-failed .quota-hint { color: var(--danger); }
 .drag-handle {
   width: 20px;
   align-self: stretch;
