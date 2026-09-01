@@ -970,8 +970,23 @@ fn parse_kimi_code(provider: OnlineProvider, json: &str) -> Result<OnlineSnapsho
         .and_then(|limit| limit.get("detail"))
         .ok_or(OnlineError::SchemaMismatch)?;
     let five_hour_quota = parse_quota(five_hour)?;
-    let reset_at = timestamp_field(five_hour, "resetTime");
     let detail_sections = kimi_detail_sections(weekly, limits, &value);
+
+    // The dashboard summary represents the tightest window — the one that
+    // runs out first. Kimi Code reports the weekly quota and a rolling
+    // 5-hour window; right after a 5-hour reset the fresh window can sit
+    // near 0% while the weekly quota is heavily consumed, and summarizing
+    // the 5-hour window then made the row look stuck near zero. Equal
+    // percentages fall back to the shorter 5-hour window.
+    let weekly_reset = timestamp_field(weekly, "resetTime");
+    let five_hour_reset = timestamp_field(five_hour, "resetTime");
+    let (primary_label, summary_percent, reset_at) = if weekly_quota.used_percent
+        > five_hour_quota.used_percent
+    {
+        ("周额度用量", weekly_quota.used_percent, weekly_reset)
+    } else {
+        ("5 小时用量", five_hour_quota.used_percent, five_hour_reset)
+    };
 
     Ok(OnlineSnapshot {
         provider_id: provider.id().to_string(),
@@ -980,13 +995,13 @@ fn parse_kimi_code(provider: OnlineProvider, json: &str) -> Result<OnlineSnapsho
         experimental: provider.experimental(),
         balance_cny: None,
         balance_original: None,
-        quota_used_percent: Some(five_hour_quota.used_percent),
+        quota_used_percent: Some(summary_percent),
         cooldown_ends_at_ms: reset_at,
         requests: None,
         total_tokens: None,
         estimated_cost_cny: None,
-        primary_label: "5 小时用量".to_string(),
-        primary_value: format!("{:.1}%", five_hour_quota.used_percent),
+        primary_label: primary_label.to_string(),
+        primary_value: format!("{summary_percent:.1}%"),
         secondary_value: format!(
             "5 小时剩余 {} · 周额度剩余 {}",
             format_percent(five_hour_quota.remaining_percent),
@@ -2837,10 +2852,11 @@ mod tests {
         assert_eq!(snapshot.provider_id, "kimi_cn");
         assert_eq!(snapshot.source, "experimental_kimi_code");
         assert!(snapshot.experimental);
-        assert_eq!(snapshot.quota_used_percent, Some(7.0));
-        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_767_243_600_000));
-        assert_eq!(snapshot.primary_label, "5 小时用量");
-        assert_eq!(snapshot.primary_value, "7.0%");
+        // Weekly 48% is tighter than the fresh 5-hour window at 7%.
+        assert_eq!(snapshot.quota_used_percent, Some(48.0));
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_767_830_400_000));
+        assert_eq!(snapshot.primary_label, "周额度用量");
+        assert_eq!(snapshot.primary_value, "48.0%");
         assert_eq!(snapshot.secondary_value, "5 小时剩余 93% · 周额度剩余 52%");
 
         assert_eq!(snapshot.detail_sections.len(), 2);
@@ -2905,7 +2921,9 @@ mod tests {
 
         let snapshot = parse_snapshot(OnlineProvider::KimiCn, json).expect("snapshot");
 
-        assert_eq!(snapshot.quota_used_percent, Some(7.0));
+        // Weekly 48% wins the summary even though its reset time is absent.
+        assert_eq!(snapshot.quota_used_percent, Some(48.0));
+        assert_eq!(snapshot.primary_label, "周额度用量");
         assert_eq!(snapshot.cooldown_ends_at_ms, None);
         assert_eq!(snapshot.secondary_value, "5 小时剩余 93% · 周额度剩余 52%");
     }
@@ -2933,10 +2951,12 @@ mod tests {
 
         let snapshot = parse_snapshot(OnlineProvider::KimiCn, json).expect("snapshot");
 
-        assert_eq!(snapshot.quota_used_percent, Some(0.0));
-        assert_eq!(snapshot.primary_value, "0.0%");
+        // Weekly 100% exhausted is the honest summary; the fresh 5-hour
+        // window at 0% must not make the row look untracked.
+        assert_eq!(snapshot.quota_used_percent, Some(100.0));
+        assert_eq!(snapshot.primary_value, "100.0%");
         assert_eq!(snapshot.secondary_value, "5 小时剩余 100% · 周额度剩余 0%");
-        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_787_194_023_645));
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_787_384_823_645));
 
         let windows = &snapshot.detail_sections[0];
         assert_eq!(windows.entries[0].label, "周额度");
@@ -2944,6 +2964,35 @@ mod tests {
         assert_eq!(windows.entries[0].remaining.as_deref(), Some("0"));
         assert_eq!(windows.entries[0].used_percent, Some(100.0));
         assert_eq!(windows.entries[0].reset_at_ms, Some(1_787_384_823_645));
+    }
+
+    #[test]
+    fn summarizes_kimi_tightest_window_when_a_fresh_5h_reset_hides_weekly_usage() {
+        // Shape observed after a rolling 5-hour reset: the fresh window sits
+        // at 2% while the weekly quota is 63% consumed. Summarizing the
+        // 5-hour window reported 2% and made the row look stuck near zero;
+        // the tightest window is the honest summary.
+        let json = r#"{
+          "usage": {"limit": "100", "used": "63", "resetTime": "2026-09-07T00:00:00Z"},
+          "limits": [{
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {"limit": "100", "used": "2", "resetTime": "2026-09-01T18:00:00Z"}
+          }]
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::KimiCn, json).expect("snapshot");
+
+        assert_eq!(snapshot.quota_used_percent, Some(63.0));
+        assert_eq!(snapshot.primary_label, "周额度用量");
+        assert_eq!(snapshot.primary_value, "63.0%");
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_788_739_200_000));
+        assert_eq!(snapshot.secondary_value, "5 小时剩余 98% · 周额度剩余 37%");
+        // Detail entries keep both windows regardless of the summary choice.
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries[0].label, "周额度");
+        assert_eq!(entries[0].used_percent, Some(63.0));
+        assert_eq!(entries[1].label, "5 小时窗口");
+        assert_eq!(entries[1].used_percent, Some(2.0));
     }
 
     #[test]

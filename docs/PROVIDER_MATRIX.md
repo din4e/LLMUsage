@@ -55,6 +55,7 @@ This matrix is the implementation contract for online provider adapters. A provi
 - Experimental usage endpoint: `GET https://api.kimi.com/coding/v1/usages`
 - Authentication uses the Kimi Code membership API Key, commonly prefixed `sk-kimi-`; it is not interchangeable with a Moonshot Open Platform key.
 - The observed response exposes the weekly quota in `usage` and the rolling 5-hour window in `limits`, with RFC 3339 reset timestamps.
+- The dashboard summary uses the tightest window (largest used percentage), so a fresh 5-hour reset never hides a heavily consumed weekly quota; ties keep the shorter 5-hour window. Details keep both windows regardless of the summary choice (verified 2026-09: weekly exhausted while the 5-hour window had just reset reported 0% and looked stuck).
 - Every validated entry in `limits` is retained rather than collapsing the response to one progress bar. `parallel` and `totalQuota` are shown when returned.
 - The `user` object and unknown raw fields are intentionally excluded from the snapshot/cache; only normalized quota data crosses the backend/frontend boundary.
 - The China adapter recognizes the `sk-kimi-` key family and contacts only the Kimi Code endpoint. Other Kimi China keys use the official Moonshot balance endpoint, preventing a credential from being sent across the two product surfaces.
