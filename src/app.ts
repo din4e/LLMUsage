@@ -896,7 +896,13 @@ function updateCooldown() {
     if (failedSyncInstances.has(instanceId)) continue;
     for (const row of providerRows(instanceId)) {
       const hint = row.querySelector<HTMLElement>(".quota-hint");
-      if (hint) hint.textContent = formatCooldown(snapshot.cooldownEndsAtMs);
+      // cooldownEndsAtMs is 0 when the tightest window has no known reset;
+      // formatting that would read as "即将恢复" forever.
+      if (hint) {
+        hint.textContent = snapshot.cooldownEndsAtMs
+          ? formatCooldown(snapshot.cooldownEndsAtMs)
+          : "";
+      }
     }
   }
 }

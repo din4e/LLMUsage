@@ -20,7 +20,8 @@ pub struct GlmUsageSnapshot {
     /// Percent of the tightest visible window (largest usage), so a fresh
     /// 5-hour reset never hides a heavily consumed weekly window.
     pub used_percent: f64,
-    /// Reset time of the window `used_percent` came from.
+    /// Reset time of the window `used_percent` came from; 0 when that window
+    /// has no scheduled reset (GLM omits `nextResetTime` for some windows).
     pub cooldown_ends_at_ms: i64,
     pub requests: u64,
     pub total_tokens: u64,
@@ -179,6 +180,12 @@ fn is_limit_kind(limit: &QuotaLimit, kind: &str) -> bool {
     limit.kind.eq_ignore_ascii_case(kind)
 }
 
+/// A window's scheduled reset, if any. Missing and non-positive timestamps
+/// both mean "no known reset" and must not fail the whole snapshot.
+fn window_reset(limit: &QuotaLimit) -> Option<i64> {
+    limit.next_reset_time.filter(|value| *value > 0)
+}
+
 /// Maps BigModel's monitor window enum without inventing semantics for values
 /// the adapter has not observed. Legacy TOKENS_LIMIT responses omitted both
 /// fields and represented the original 5-hour window.
@@ -234,8 +241,10 @@ struct QuotaLimit {
     #[serde(default)]
     number: Option<i64>,
     percentage: f64,
-    #[serde(rename = "nextResetTime")]
-    next_reset_time: i64,
+    /// GLM omits this for windows it cannot schedule yet — observed on a max
+    /// plan whose fresh 5-hour window answered `percentage: 0` with no reset.
+    #[serde(rename = "nextResetTime", default)]
+    next_reset_time: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -294,11 +303,9 @@ pub fn parse_snapshot(
 
     if level.trim().is_empty()
         || quota_limits.is_empty()
-        || quota_limits.iter().any(|limit| {
-            !limit.percentage.is_finite()
-                || !(0.0..=100.0).contains(&limit.percentage)
-                || limit.next_reset_time <= 0
-        })
+        || quota_limits
+            .iter()
+            .any(|limit| !limit.percentage.is_finite() || !(0.0..=100.0).contains(&limit.percentage))
     {
         return Err(GlmParseError::SchemaMismatch);
     }
@@ -314,7 +321,7 @@ pub fn parse_snapshot(
     quota_limits.sort_by_key(|limit| {
         (
             quota_window(limit).1.unwrap_or(i64::MAX),
-            limit.next_reset_time,
+            window_reset(limit).unwrap_or(i64::MAX),
         )
     });
     let summary = quota_limits
@@ -330,16 +337,21 @@ pub fn parse_snapshot(
                         .unwrap_or(i64::MAX)
                         .cmp(&quota_window(right).1.unwrap_or(i64::MAX))
                 })
-                .then_with(|| left.next_reset_time.cmp(&right.next_reset_time))
+                .then_with(|| {
+                    window_reset(left)
+                        .unwrap_or(i64::MAX)
+                        .cmp(&window_reset(right).unwrap_or(i64::MAX))
+                })
         })
         .expect("non-empty limits checked above");
     let used_percent = summary.percentage;
-    let reset_at = summary.next_reset_time;
+    let reset_at = window_reset(summary).unwrap_or(0);
     let entries = quota_limits
         .into_iter()
         .map(|limit| {
             let remaining_percent = (100.0 - limit.percentage).clamp(0.0, 100.0);
             let (window, duration_ms) = quota_window(&limit);
+            let reset = window_reset(&limit);
             OnlineDetailEntry {
                 label: if is_limit_kind(&limit, "CREDIT_LIMIT") {
                     "额度用量".to_string()
@@ -352,9 +364,8 @@ pub fn parse_snapshot(
                 unit: "%".to_string(),
                 used_percent: Some(limit.percentage),
                 window,
-                start_at_ms: duration_ms
-                    .and_then(|duration| limit.next_reset_time.checked_sub(duration)),
-                reset_at_ms: Some(limit.next_reset_time),
+                start_at_ms: duration_ms.and_then(|duration| reset.and_then(|at| at.checked_sub(duration))),
+                reset_at_ms: reset,
                 remaining_ms: None,
             }
         })
@@ -487,6 +498,71 @@ mod tests {
             entries[1].start_at_ms,
             Some(1_788_163_653_998 - 7 * 24 * 60 * 60 * 1000)
         );
+    }
+
+    #[test]
+    fn tolerates_windows_without_a_scheduled_reset() {
+        // Verbatim quota body from a GLM max account on 2026-09-11: the fresh
+        // 5-hour window answered `percentage: 0` with no nextResetTime at all.
+        // The required-field deserialization used to fail the whole snapshot,
+        // surfacing in the UI as a generic "sync failed" for a valid key.
+        let quota = r#"{
+          "code": 200,
+          "msg": "操作成功",
+          "data": {
+            "level": "max",
+            "limits": [
+              {"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":28000,"currentValue":0,"remaining":28000,"percentage":0},
+              {"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":140000,"currentValue":15800,"remaining":124199,"percentage":11,"nextResetTime":1789716236953}
+            ]
+          }
+        }"#;
+        let usage = r#"{
+          "code": 200,
+          "msg": "操作成功",
+          "data": {
+            "totalUsage": {"totalModelCallCount": 1353, "totalTokensUsage": 175595410}
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(quota, usage).expect("a missing reset must not fail the sync");
+
+        // The weekly window is the tightest one, so it drives the summary.
+        assert_eq!(snapshot.used_percent, 11.0);
+        assert_eq!(snapshot.cooldown_ends_at_ms, 1_789_716_236_953);
+
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries[0].window.as_deref(), Some("5 小时"));
+        assert_eq!(entries[0].used_percent, Some(0.0));
+        assert_eq!(entries[0].reset_at_ms, None);
+        assert_eq!(entries[0].start_at_ms, None);
+        assert_eq!(entries[1].window.as_deref(), Some("每周"));
+        assert_eq!(entries[1].reset_at_ms, Some(1_789_716_236_953));
+    }
+
+    #[test]
+    fn reports_no_cooldown_when_the_tightest_window_has_no_reset() {
+        let quota = r#"{
+          "code": 200,
+          "data": {
+            "level": "max",
+            "limits": [
+              {"type":"CREDIT_LIMIT","unit":3,"number":5,"percentage":90},
+              {"type":"CREDIT_LIMIT","unit":6,"number":1,"percentage":11,"nextResetTime":1789716236953}
+            ]
+          }
+        }"#;
+        let usage = r#"{
+          "code": 200,
+          "data": {
+            "totalUsage": {"totalModelCallCount": 0, "totalTokensUsage": 0}
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(quota, usage).expect("parses despite the unknown reset");
+
+        assert_eq!(snapshot.used_percent, 90.0);
+        assert_eq!(snapshot.cooldown_ends_at_ms, 0);
     }
 
     #[test]
