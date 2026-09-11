@@ -154,6 +154,7 @@ const onlineSnapshots = new Map<string, OnlineSnapshot>();
 const failedSyncInstances = new Map<string, string>();
 const PROVIDER_ORDER_KEY = "llm-usage:provider-order";
 const INSTANCE_REMARKS_KEY = "llm-usage:instance-remarks";
+const AUTOSTART_KEY = "llm-usage:autostart-enabled";
 const instanceRemarks = loadSavedInstanceRemarks();
 const savedInstanceOrder = loadSavedInstanceOrder();
 let dragSourceRow: HTMLElement | null = null;
@@ -1192,7 +1193,13 @@ function updateAutostartToggle(enabled: boolean) {
   if (autostartToggle) autostartToggle.title = `开机自启动：${enabled ? "开" : "关"}`;
 }
 
-/** Reads the OS registration once at startup so the toggle shows real state. */
+/**
+ * Reads the OS registration once at startup so the toggle shows real state.
+ * Tauri's NSIS uninstaller — which also runs silently before every upgrade —
+ * deletes the HKCU Run entry, so a boot-start the user enabled would quietly
+ * die on each app update. The persisted desired state lets us re-register on
+ * the next launch instead.
+ */
 async function initAutostartToggle() {
   if (!autostartToggle) return;
   if (!isTauri()) {
@@ -1201,7 +1208,14 @@ async function initAutostartToggle() {
     return;
   }
   try {
-    updateAutostartToggle(await isAutostartEnabled());
+    let enabled = await isAutostartEnabled();
+    if (!enabled && window.localStorage.getItem(AUTOSTART_KEY) === "true") {
+      // Upgrade wiped the registration; the user still wants boot-start.
+      await enableAutostart();
+      enabled = true;
+    }
+    window.localStorage.setItem(AUTOSTART_KEY, String(enabled));
+    updateAutostartToggle(enabled);
   } catch {
     // Registry/keychain probe failed: leave it off rather than guess.
     updateAutostartToggle(false);
@@ -1215,6 +1229,7 @@ autostartToggle?.addEventListener("click", async () => {
     const target = !(await isAutostartEnabled());
     if (target) await enableAutostart();
     else await disableAutostart();
+    window.localStorage.setItem(AUTOSTART_KEY, String(target));
     updateAutostartToggle(target);
     setStatus(target ? "开机自启动已开启" : "开机自启动已关闭");
   } catch (reason) {
