@@ -1,6 +1,4 @@
-use std::path::Path;
-#[cfg(target_os = "windows")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::LocalFree;
