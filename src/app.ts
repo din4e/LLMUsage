@@ -165,7 +165,7 @@ let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
 let selectedTrendMetric: "tokens" | "balance" = "tokens";
 let selectedRecentChangeMetric: ProviderChangeMetric = "tokens";
-const APP_VERSION_FALLBACK = "0.1.6";
+const APP_VERSION_FALLBACK = "0.1.7";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
