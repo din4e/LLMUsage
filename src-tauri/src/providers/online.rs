@@ -2,8 +2,33 @@ use chrono::{DateTime, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use zeroize::Zeroize;
+
+/// Cached USD→CNY rate from frankfurter.app. Successes hold for 12 hours and
+/// failures for 10 minutes, so auto-sync (as fast as once a minute) cannot
+/// hammer the rate service while it is down or rate-limiting.
+struct UsdCnyRateCache {
+    rate: Option<f64>,
+    fetched_at: Option<Instant>,
+}
+
+static USD_CNY_RATE_CACHE: LazyLock<Mutex<UsdCnyRateCache>> = LazyLock::new(|| {
+    Mutex::new(UsdCnyRateCache {
+        rate: None,
+        fetched_at: None,
+    })
+});
+
+const USD_CNY_RATE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+const USD_CNY_RATE_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Page cap for dashboard-style analytics endpoints. Each page already carries
+/// `limit=31` buckets / `limit=1000` records, so ten pages far exceeds any
+/// realistic organization; hitting the cap flags the snapshot as incomplete
+/// instead of looping forever on a broken cursor.
+const MAX_ANALYTICS_PAGES: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnlineProvider {
@@ -598,10 +623,22 @@ impl OnlineClient {
             .append_pair("bucket_width", "1d")
             .append_pair("group_by[]", "line_item")
             .append_pair("limit", "31");
-        let usage = self.fetch_bearer_json(usage_url).await?;
-        let costs = self.fetch_bearer_json(cost_url).await?;
+        let (usage, usage_truncated) = self
+            .fetch_paged_json(usage_url, |url| self.bearer_json_request(url))
+            .await?;
+        let (costs, costs_truncated) = self
+            .fetch_paged_json(cost_url, |url| self.bearer_json_request(url))
+            .await?;
         let rate = self.fetch_usd_cny_rate().await;
-        parse_openai_analytics(&usage, &costs, rate)
+        let mut snapshot = parse_openai_analytics(
+            &value_to_json_string(&usage)?,
+            &value_to_json_string(&costs)?,
+            rate,
+        )?;
+        if usage_truncated || costs_truncated {
+            mark_incomplete(&mut snapshot);
+        }
+        Ok(snapshot)
     }
 
     async fn fetch_claude_code_analytics(
@@ -613,17 +650,16 @@ impl OnlineClient {
         url.query_pairs_mut()
             .append_pair("starting_at", &range.utc_date()?)
             .append_pair("limit", "1000");
-        let request = self
-            .client
-            .get(url)
-            .header("x-api-key", self.api_key.clone())
-            .header("anthropic-version", "2023-06-01")
-            .header(reqwest::header::ACCEPT, "application/json")
-            .build()
-            .map_err(|_| OnlineError::RequestFailed)?;
-        let json = self.execute_json(request).await?;
+        let (value, truncated) = self
+            .fetch_paged_json(url, |url| self.anthropic_json_request(url))
+            .await?;
         let rate = self.fetch_usd_cny_rate().await;
-        parse_claude_code_analytics(&json, rate)
+        let mut snapshot =
+            parse_claude_code_analytics(&value_to_json_string(&value)?, rate)?;
+        if truncated {
+            mark_incomplete(&mut snapshot);
+        }
+        Ok(snapshot)
     }
 
     async fn fetch_anthropic_messages(
@@ -638,16 +674,15 @@ impl OnlineClient {
             .append_pair("bucket_width", "1d")
             .append_pair("group_by[]", "model")
             .append_pair("limit", "31");
-        let request = self
-            .client
-            .get(url)
-            .header("x-api-key", self.api_key.clone())
-            .header("anthropic-version", "2023-06-01")
-            .header(reqwest::header::ACCEPT, "application/json")
-            .build()
-            .map_err(|_| OnlineError::RequestFailed)?;
-        let json = self.execute_json(request).await?;
-        parse_anthropic_messages(self.provider, &json)
+        let (value, truncated) = self
+            .fetch_paged_json(url, |url| self.anthropic_json_request(url))
+            .await?;
+        let mut snapshot =
+            parse_anthropic_messages(self.provider, &value_to_json_string(&value)?)?;
+        if truncated {
+            mark_incomplete(&mut snapshot);
+        }
+        Ok(snapshot)
     }
 
     async fn fetch_xai_balance(
@@ -777,15 +812,75 @@ impl OnlineClient {
             .map_err(|_| OnlineError::RequestFailed)
     }
 
-    async fn fetch_bearer_json(&self, url: reqwest::Url) -> Result<String, OnlineError> {
-        let request = self
-            .client
+    fn bearer_json_request(&self, url: reqwest::Url) -> Result<reqwest::Request, OnlineError> {
+        self.client
             .get(url)
             .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
             .header(reqwest::header::ACCEPT, "application/json")
             .build()
-            .map_err(|_| OnlineError::RequestFailed)?;
-        self.execute_json(request).await
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    fn anthropic_json_request(&self, url: reqwest::Url) -> Result<reqwest::Request, OnlineError> {
+        self.client
+            .get(url)
+            .header("x-api-key", self.api_key.clone())
+            .header("anthropic-version", "2023-06-01")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    async fn fetch_bearer_json(&self, url: reqwest::Url) -> Result<String, OnlineError> {
+        self.execute_json(self.bearer_json_request(url)?).await
+    }
+
+    /// Fetches every page of a dashboard-style paginated analytics endpoint
+    /// (OpenAI usage/costs, Anthropic usage, Claude Code day reports). Each
+    /// page's `data` array is merged into the first page's value so the
+    /// downstream parsers stay single-shot. Returns the merged value plus
+    /// whether pagination stopped early — page cap reached or an unusable
+    /// cursor while `has_more` was true — which callers surface as an
+    /// incomplete-data note.
+    async fn fetch_paged_json(
+        &self,
+        first_url: reqwest::Url,
+        build_request: impl Fn(reqwest::Url) -> Result<reqwest::Request, OnlineError>,
+    ) -> Result<(Value, bool), OnlineError> {
+        let mut merged: Option<Value> = None;
+        let mut current = first_url.clone();
+        let mut truncated = false;
+        for page_index in 0..MAX_ANALYTICS_PAGES {
+            let text = self.execute_json(build_request(current)?).await?;
+            let page: Value = serde_json::from_str(&text).map_err(|_| OnlineError::InvalidJson)?;
+            let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+            let next_page = page
+                .get("next_page")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            merged = Some(match merged.take() {
+                None => page,
+                Some(mut accumulated) => {
+                    merge_page_data(&mut accumulated, page);
+                    accumulated
+                }
+            });
+            if !has_more {
+                return Ok((merged.expect("first page assigned"), false));
+            }
+            if page_index + 1 == MAX_ANALYTICS_PAGES {
+                truncated = true;
+                break;
+            }
+            match next_page_url(&first_url, next_page.as_deref()) {
+                Some(url) => current = url,
+                None => {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        Ok((merged.expect("first page assigned"), truncated))
     }
 
     async fn execute_json(&self, request: reqwest::Request) -> Result<String, OnlineError> {
@@ -803,7 +898,34 @@ impl OnlineClient {
             .map_err(|_| OnlineError::RequestFailed)
     }
 
+    /// Serves the USD→CNY rate from the process-wide cache when fresh; only
+    /// cache misses reach the network.
     async fn fetch_usd_cny_rate(&self) -> Option<f64> {
+        {
+            let cache = USD_CNY_RATE_CACHE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(fetched_at) = cache.fetched_at {
+                let ttl = if cache.rate.is_some() {
+                    USD_CNY_RATE_TTL
+                } else {
+                    USD_CNY_RATE_FAILURE_TTL
+                };
+                if fetched_at.elapsed() < ttl {
+                    return cache.rate;
+                }
+            }
+        }
+        let rate = self.fetch_usd_cny_rate_uncached().await;
+        let mut cache = USD_CNY_RATE_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.rate = rate;
+        cache.fetched_at = Some(Instant::now());
+        rate
+    }
+
+    async fn fetch_usd_cny_rate_uncached(&self) -> Option<f64> {
         let response = self
             .client
             .get("https://api.frankfurter.app/latest?from=USD&to=CNY")
@@ -821,6 +943,49 @@ impl OnlineClient {
             .and_then(number_like_f64)
             .filter(|rate| rate.is_finite() && (1.0..=20.0).contains(rate))
     }
+}
+
+/// Serializes a merged multi-page `Value` back into the string shape the
+/// single-shot parsers expect.
+fn value_to_json_string(value: &Value) -> Result<String, OnlineError> {
+    serde_json::to_string(value).map_err(|_| OnlineError::SchemaMismatch)
+}
+
+/// Flags a snapshot whose source data was paginated and stopped early, so the
+/// numbers shown are known-undercounted rather than silently wrong.
+fn mark_incomplete(snapshot: &mut OnlineSnapshot) {
+    snapshot.secondary_value = if snapshot.secondary_value.is_empty() {
+        "数据不完整".to_string()
+    } else {
+        format!("{} · 数据不完整", snapshot.secondary_value)
+    };
+}
+
+/// Appends `page["data"]` onto `accumulator["data"]` when both are arrays;
+/// otherwise the accumulator keeps the first page's shape untouched.
+fn merge_page_data(accumulator: &mut Value, page: Value) {
+    let Some(incoming) = page.get("data").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(target) = accumulator
+        .get_mut("data")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    target.extend(incoming.iter().cloned());
+}
+
+/// Resolves a page's `next_page` reference against the first request.
+/// Dashboard APIs return either `/path?query` or a bare `?query`; both work
+/// via URL join. Only same-host https continuations are followed.
+fn next_page_url(first_url: &reqwest::Url, next_page: Option<&str>) -> Option<reqwest::Url> {
+    let next = next_page?.trim();
+    if next.is_empty() {
+        return None;
+    }
+    let url = first_url.join(next).ok()?;
+    (url.host_str() == first_url.host_str() && url.scheme() == "https").then_some(url)
 }
 
 fn sensitive_header(value: &str) -> Result<reqwest::header::HeaderValue, OnlineError> {
@@ -938,12 +1103,19 @@ fn parse_kimi(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, On
     {
         return Err(OnlineError::SchemaMismatch);
     }
+    // The international site (api.moonshot.ai) bills in USD while the CN site
+    // bills in CNY; the response carries no currency field, so this is assumed
+    // pending verification against a real Kimi Global account.
+    let (currency, symbol) = match provider {
+        OnlineProvider::KimiGlobal => ("USD", "$"),
+        _ => ("CNY", "¥"),
+    };
     let mut snapshot = balance_snapshot(
         provider,
         data.available_balance,
-        "CNY",
+        currency,
         format!(
-            "现金 ¥{:.2} · 赠金 ¥{:.2}",
+            "现金 {symbol}{:.2} · 赠金 {symbol}{:.2}",
             data.cash_balance, data.voucher_balance
         ),
     );
@@ -2811,6 +2983,84 @@ mod tests {
         assert_eq!(snapshot.estimated_cost_cny, None);
         assert_eq!(snapshot.source, "official_balance");
         assert!(!snapshot.experimental);
+    }
+
+    #[test]
+    fn parses_kimi_global_balance_in_usd() {
+        let json = r#"{
+          "code": 0,
+          "data": {"available_balance": 12.5, "voucher_balance": 2.5, "cash_balance": 10.0},
+          "scode": "0x0",
+          "status": true
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::KimiGlobal, json).expect("snapshot");
+
+        // The international site bills in USD: no CNY balance (so it stays out
+        // of the CNY totals) and dollar-formatted display values.
+        assert_eq!(snapshot.provider_id, "kimi_global");
+        assert_eq!(snapshot.balance_cny, None);
+        assert_eq!(snapshot.primary_value, "$12.50");
+        assert!(snapshot.secondary_value.contains("$10.00"));
+        assert!(snapshot.secondary_value.contains("$2.50"));
+    }
+
+    #[test]
+    fn resolves_pagination_cursors_against_the_first_request() {
+        let first =
+            reqwest::Url::parse("https://api.openai.com/v1/organization/usage/compute?limit=31")
+                .expect("url");
+
+        // Absolute-path references and bare query strings both continue on
+        // the same endpoint.
+        assert_eq!(
+            next_page_url(
+                &first,
+                Some("/v1/organization/usage/compute?limit=31&page%5Bparam%5D=2")
+            )
+            .as_ref()
+            .and_then(reqwest::Url::host_str),
+            Some("api.openai.com")
+        );
+        assert_eq!(
+            next_page_url(&first, Some("?limit=31&page=2"))
+                .map(|url| url.path().to_string()),
+            Some("/v1/organization/usage/compute".to_string())
+        );
+
+        // Cross-origin, non-https, and missing cursors stop pagination.
+        assert_eq!(
+            next_page_url(&first, Some("https://evil.example.com/next")),
+            None
+        );
+        assert_eq!(next_page_url(&first, Some("http://api.openai.com/next")), None);
+        assert_eq!(next_page_url(&first, Some("  ")), None);
+        assert_eq!(next_page_url(&first, None), None);
+    }
+
+    #[test]
+    fn merges_page_data_arrays_for_single_shot_parsing() {
+        let mut accumulated = serde_json::json!({
+            "data": [{"id": 1}],
+            "has_more": true,
+            "next_page": "?page=2"
+        });
+        let page_two = serde_json::json!({
+            "data": [{"id": 2}, {"id": 3}],
+            "has_more": false,
+            "next_page": null
+        });
+
+        merge_page_data(&mut accumulated, page_two);
+
+        assert_eq!(
+            accumulated["data"],
+            serde_json::json!([{"id": 1}, {"id": 2}, {"id": 3}])
+        );
+
+        // Pages without a data array leave the accumulator untouched.
+        merge_page_data(&mut accumulated, serde_json::json!({"error": "shape"}));
+        assert_eq!(accumulated["data"].as_array().map(Vec::len), Some(3));
     }
 
     #[test]
