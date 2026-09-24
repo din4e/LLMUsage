@@ -938,7 +938,6 @@ async function syncGlm(instanceId: string): Promise<boolean> {
     setStatus("浏览器预览模式");
     return false;
   }
-  setStatus(`正在连接 ${providerName(instanceId)}`, "syncing");
   try {
     renderGlm(instanceId, await invoke<GlmSnapshot>("sync_glm", {
       providerId: instanceId,
@@ -1000,6 +999,9 @@ async function syncAll() {
     return;
   }
   isSyncing = true;
+  // Round-level syncing state: online-only rounds never pulsed before (only
+  // syncGlm set "syncing"), and a stale error dot stayed red through retries.
+  setStatus("正在同步…", "syncing");
   try {
     const syncTasks = orderedConfiguredInstances().map((instanceId) =>
       baseProviderId(instanceId) === "glm" ? syncGlm(instanceId) : syncOnline(instanceId),
