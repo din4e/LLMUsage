@@ -51,6 +51,8 @@ pub struct SecretVault {
     #[cfg(target_os = "windows")]
     path: PathBuf,
     #[cfg(not(target_os = "windows"))]
+    app_data: PathBuf,
+    #[cfg(not(target_os = "windows"))]
     provider_id: String,
 }
 
@@ -64,6 +66,8 @@ impl SecretVault {
             path: app_data_dir
                 .join("credentials")
                 .join(format!("{provider_id}.dpapi")),
+            #[cfg(not(target_os = "windows"))]
+            app_data: app_data_dir.to_path_buf(),
             #[cfg(not(target_os = "windows"))]
             provider_id: provider_id.to_string(),
         })
@@ -97,7 +101,12 @@ impl SecretVault {
         }
         self.keychain_entry()?
             .set_password(secret)
-            .map_err(map_keyring_error)
+            .map_err(map_keyring_error)?;
+        // The keyring cannot be enumerated by service, so mirror this instance
+        // in the registry file for list/export/import. Best effort: a registry
+        // IO failure never fails an already-successful credential save.
+        registry_add(&self.app_data, &self.provider_id);
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
@@ -139,7 +148,10 @@ impl SecretVault {
         // the item never existed. Treat that as success so forgetting a provider
         // is idempotent regardless of prior keychain state.
         match self.keychain_entry()?.delete_credential() {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                registry_remove(&self.app_data, &self.provider_id);
+                Ok(())
+            }
             Err(error) => match map_keyring_error(error) {
                 SecretError::Missing => Ok(()),
                 other => Err(other),
@@ -159,6 +171,71 @@ fn is_provider_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+/// Non-Windows platforms keep credentials in the system keyring, which cannot
+/// enumerate entries by service. `instances.json` in the app data directory
+/// mirrors the set of configured instance ids so listing, export, and import
+/// dedup keep working; `SecretVault::save`/`delete` keep it in sync. Windows
+/// never writes it — the DPAPI directory is the enumeration source there.
+fn instance_registry_path(app_data_dir: &Path) -> std::path::PathBuf {
+    app_data_dir.join("instances.json")
+}
+
+fn read_instance_registry(app_data_dir: &Path) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(instance_registry_path(app_data_dir)) else {
+        return Vec::new();
+    };
+    let Ok(values) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = values.into_iter().filter(|id| is_provider_id(id)).collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+// Only the non-Windows save/delete paths call the writers; Windows enumerates
+// DPAPI files instead. Tests exercise them on every platform, hence the
+// Windows-targeted dead_code allowance on the lib build.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn write_instance_registry(app_data_dir: &Path, ids: &[String]) {
+    let path = instance_registry_path(app_data_dir);
+    let Some(parent) = path.parent() else { return };
+    let _ = std::fs::create_dir_all(parent);
+    if let Ok(bytes) = serde_json::to_vec(ids) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// Records a configured instance id. Best effort, idempotent.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn registry_add(app_data_dir: &Path, instance_id: &str) {
+    if !is_provider_id(instance_id) {
+        return;
+    }
+    let mut ids = read_instance_registry(app_data_dir);
+    if !ids.iter().any(|id| id == instance_id) {
+        ids.push(instance_id.to_string());
+        write_instance_registry(app_data_dir, &ids);
+    }
+}
+
+/// Drops an instance id after its credential was deleted. Best effort.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn registry_remove(app_data_dir: &Path, instance_id: &str) {
+    let mut ids = read_instance_registry(app_data_dir);
+    let before = ids.len();
+    ids.retain(|id| id != instance_id);
+    if ids.len() != before {
+        write_instance_registry(app_data_dir, &ids);
+    }
+}
+
+/// Instance ids recorded by non-Windows credential saves, sorted and deduped.
+/// Empty when the registry file is absent (the Windows case).
+pub fn registry_ids(app_data_dir: &Path) -> Vec<String> {
+    read_instance_registry(app_data_dir)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -274,6 +351,44 @@ mod tests {
             SecretVault::new(Path::new("C:/app"), ""),
             Err(SecretError::Invalid)
         ));
+    }
+
+    #[test]
+    fn instance_registry_round_trips_add_and_remove() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-registry-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        registry_add(&dir, "kimi_cn");
+        registry_add(&dir, "kimi_cn_2");
+        registry_add(&dir, "kimi_cn"); // idempotent
+        registry_add(&dir, "../evil"); // unsafe ids are ignored
+        assert_eq!(registry_ids(&dir), vec!["kimi_cn", "kimi_cn_2"]);
+
+        registry_remove(&dir, "kimi_cn");
+        registry_remove(&dir, "kimi_cn"); // idempotent
+        assert_eq!(registry_ids(&dir), vec!["kimi_cn_2"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn instance_registry_tolerates_a_corrupt_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-registry-corrupt-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("instances.json"), b"{not-json").expect("seed corrupt");
+
+        assert!(registry_ids(&dir).is_empty());
+        registry_add(&dir, "glm");
+        assert_eq!(registry_ids(&dir), vec!["glm"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(target_os = "windows")]

@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::cache::CachedSnapshot;
 use crate::providers::glm::GlmClient;
 use crate::providers::online::{split_instance_suffix, OnlineClient, OnlineProvider};
-use crate::secret::SecretVault;
+use crate::secret::{registry_ids, SecretVault};
 
 pub const TRANSFER_FORMAT_VERSION: u32 = 1;
 const MAX_TRANSFER_FILE_BYTES: usize = 2 * 1024 * 1024;
@@ -126,25 +126,36 @@ pub fn credential_instance(value: &str) -> Option<(String, u32)> {
     }
 }
 
-/// Lists configured instance ids (GLM and online) from a credentials
-/// directory, sorted by base id then instance index.
+/// Lists configured instance ids (GLM and online), sorted by base id then
+/// instance index. Windows enumerates DPAPI credential files; non-Windows
+/// credentials live in the system keyring, which cannot be enumerated by
+/// service, so the instance registry maintained by `SecretVault` joins the
+/// DPAPI scan (absent on Windows — the merge is a no-op there).
 pub fn enumerate_instances(app_data: &Path) -> Vec<String> {
-    let entries = match std::fs::read_dir(app_data.join("credentials")) {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
     let mut instances: Vec<(String, u32, String)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("dpapi") {
-            continue;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut push_instance = |id: &str| {
+        if !seen.insert(id.to_string()) {
+            return;
         }
-        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if let Some((base, index)) = credential_instance(stem) {
-            instances.push((base, index, stem.to_string()));
+        if let Some((base, index)) = credential_instance(id) {
+            instances.push((base, index, id.to_string()));
         }
+    };
+    if let Ok(entries) = std::fs::read_dir(app_data.join("credentials")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("dpapi") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            push_instance(stem);
+        }
+    }
+    for id in registry_ids(app_data) {
+        push_instance(&id);
     }
     instances.sort_by(|left, right| {
         left.0
@@ -778,6 +789,31 @@ mod tests {
         let instances = enumerate_instances(&dir);
 
         assert_eq!(instances, vec!["glm", "kimi_cn", "kimi_cn_2"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enumerates_registry_instances_alongside_dpapi_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-transfer-registry-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let credentials = dir.join("credentials");
+        std::fs::create_dir_all(&credentials).expect("create temp dir");
+        std::fs::write(credentials.join("glm.dpapi"), b"x").expect("seed dpapi file");
+        // Keychain-backed instances only exist in the registry file; unknown
+        // ids are filtered and a dpapi duplicate does not double-list.
+        std::fs::write(
+            dir.join("instances.json"),
+            br#"["kimi_cn","glm","not_a_provider"]"#,
+        )
+        .expect("seed registry");
+
+        let instances = enumerate_instances(&dir);
+
+        assert_eq!(instances, vec!["glm", "kimi_cn"]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

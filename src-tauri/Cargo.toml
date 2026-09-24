@@ -29,8 +29,10 @@ zeroize = "1"
 libloading = "0.8"
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
-# macOS: store credentials in the Keychain instead of DPAPI.
-[target.'cfg(target_os = "macos")'.dependencies]
+# macOS/Linux: store credentials in the system keyring (Keychain / secret
+# service) instead of DPAPI. secret.rs compiles the keyring paths for every
+# non-Windows target, so the dependency must follow the same cfg.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
 keyring = "3"
 
 [profile.release]
