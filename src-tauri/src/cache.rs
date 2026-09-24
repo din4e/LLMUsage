@@ -1,6 +1,7 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,6 +44,7 @@ pub struct DailyUsageRecord {
     pub estimated_cost_cny: Option<f64>,
     /// Snapshot of the provider's remaining balance (¥) at sync time. A stock
     /// value, not a flow: the day's latest sample is the closing balance.
+    /// Negative is legal — overdraft is a real account state.
     #[serde(default)]
     pub balance_cny: Option<f64>,
 }
@@ -73,7 +75,17 @@ impl DailyUsageHistory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let today = record.date.clone();
-        let mut records = self.load()?;
+        let mut records = match self.load() {
+            Ok(records) => records,
+            // A corrupt or oversized history file must not brick every future
+            // sync: quarantine it for forensics and restart from the incoming
+            // record. Only content failures self-heal; IO errors stay errors.
+            Err(CacheError::Json | CacheError::Invalid) => {
+                quarantine_file(&self.path).map_err(|_| CacheError::Io)?;
+                Vec::new()
+            }
+            Err(error) => return Err(error),
+        };
         records.retain(|existing| {
             existing.date != record.date
                 || existing.slot != record.slot
@@ -90,15 +102,15 @@ impl DailyUsageHistory {
         let parent = self.path.parent().ok_or(CacheError::Invalid)?;
         std::fs::create_dir_all(parent).map_err(|_| CacheError::Io)?;
         let bytes = serde_json::to_vec(&records).map_err(|_| CacheError::Json)?;
-        let temp = self.path.with_extension("tmp");
-        std::fs::write(&temp, bytes).map_err(|_| CacheError::Io)?;
-        if self.path.exists() {
-            std::fs::remove_file(&self.path).map_err(|_| CacheError::Io)?;
-        }
-        std::fs::rename(temp, &self.path).map_err(|_| CacheError::Io)
+        atomic_write(&self.path, &bytes)
     }
 
     pub fn load(&self) -> Result<Vec<DailyUsageRecord>, CacheError> {
+        // Crash recovery: if the atomic-write rename never landed, the .tmp
+        // copy is the only surviving data — restore it when it parses.
+        if !self.path.exists() {
+            recover_from_tmp(&self.path, parses_history);
+        }
         let bytes = match std::fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -137,12 +149,7 @@ impl SnapshotCache {
         };
         let bytes = serde_json::to_vec(&entry).map_err(|_| CacheError::Json)?;
         let path = self.dir.join(format!("{provider_id}.json"));
-        let temp = self.dir.join(format!("{provider_id}.tmp"));
-        std::fs::write(&temp, bytes).map_err(|_| CacheError::Io)?;
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|_| CacheError::Io)?;
-        }
-        std::fs::rename(temp, path).map_err(|_| CacheError::Io)
+        atomic_write(&path, &bytes)
     }
 
     pub fn load_all(&self) -> Result<Vec<CachedSnapshot>, CacheError> {
@@ -152,13 +159,46 @@ impl SnapshotCache {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(snapshots),
             Err(_) => return Err(CacheError::Io),
         };
-        for entry in entries {
-            let entry = entry.map_err(|_| CacheError::Io)?;
-            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+        let paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        // Crash recovery: restore any snapshot whose atomic-write rename never
+        // landed (valid .tmp next to a missing .json). Recovered targets join
+        // the load list so they are visible in the same pass.
+        let mut recovered: Vec<PathBuf> = Vec::new();
+        for path in &paths {
+            if path.extension().and_then(|value| value.to_str()) != Some("tmp") {
                 continue;
             }
-            let bytes = std::fs::read(entry.path()).map_err(|_| CacheError::Io)?;
-            snapshots.push(serde_json::from_slice(&bytes).map_err(|_| CacheError::Json)?);
+            let target = path.with_extension("json");
+            if target.exists() {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(path) {
+                if serde_json::from_slice::<CachedSnapshot>(&bytes).is_ok() {
+                    let _ = std::fs::rename(path, &target);
+                    recovered.push(target);
+                }
+            }
+        }
+        for path in paths.iter().chain(recovered.iter()) {
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            // One corrupt file (e.g. a crash-truncated write) must not blank
+            // every provider's cached snapshot: quarantine it and keep reading.
+            let parsed = std::fs::read(path)
+                .map_err(|_| CacheError::Io)
+                .and_then(|bytes| {
+                    serde_json::from_slice::<CachedSnapshot>(&bytes).map_err(|_| CacheError::Json)
+                });
+            match parsed {
+                Ok(snapshot) => snapshots.push(snapshot),
+                Err(_) => {
+                    let _ = quarantine_file(path);
+                }
+            }
         }
         snapshots.sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
         Ok(snapshots)
@@ -187,6 +227,72 @@ fn is_safe_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
+/// Durable tmp-then-rename write shared by the history and snapshot caches.
+/// The tmp copy is fsynced before the swap so a power cut cannot leave an
+/// empty target; `recover_from_tmp` bounds the damage of a crash between the
+/// remove and the rename (Windows `rename` cannot overwrite an existing file,
+/// hence the remove).
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
+    let temp = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&temp).map_err(|_| CacheError::Io)?;
+    file.write_all(bytes).map_err(|_| CacheError::Io)?;
+    file.sync_all().map_err(|_| CacheError::Io)?;
+    drop(file);
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|_| CacheError::Io)?;
+    }
+    std::fs::rename(&temp, path).map_err(|_| CacheError::Io)?;
+    sync_parent_dir(path);
+    Ok(())
+}
+
+/// Persist the rename itself so a power cut right after the swap cannot lose
+/// the directory entry. Directory sync is only available on Unix.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) {}
+
+/// Restores a stranded `.tmp` over its missing target when the bytes parse.
+/// No-op when the target exists or the tmp copy is absent/unusable.
+fn recover_from_tmp(path: &Path, parses: impl FnOnce(&[u8]) -> bool) {
+    let temp = path.with_extension("tmp");
+    if path.exists() || !temp.is_file() {
+        return;
+    }
+    if let Ok(bytes) = std::fs::read(&temp) {
+        if parses(&bytes) {
+            let _ = std::fs::rename(&temp, path);
+        }
+    }
+}
+
+fn parses_history(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Vec<DailyUsageRecord>>(bytes)
+        .map(|records| records.iter().all(is_valid_daily_record))
+        .is_ok()
+}
+
+/// Renames an unusable JSON file aside (`.corrupt`) for forensics, replacing
+/// any previous quarantine copy. Best effort — callers treat failure as IO.
+fn quarantine_file(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let corrupt = path.with_extension("corrupt");
+    if corrupt.exists() {
+        std::fs::remove_file(&corrupt)?;
+    }
+    std::fs::rename(path, &corrupt)
+}
+
 fn is_valid_date(value: &str) -> bool {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
@@ -200,9 +306,7 @@ fn is_valid_daily_record(record: &DailyUsageRecord) -> bool {
         && record
             .estimated_cost_cny
             .is_none_or(|value| value.is_finite() && value >= 0.0)
-        && record
-            .balance_cny
-            .is_none_or(|value| value.is_finite() && value >= 0.0)
+        && record.balance_cny.is_none_or(|value| value.is_finite())
 }
 
 /// Sort rank for the 15-minute slot within a day. `None` (daily rollup or a
@@ -487,23 +591,134 @@ mod tests {
             })
             .expect("balance sample accepted");
 
-        for invalid in [f64::NAN, -1.0] {
-            let result = history.upsert(DailyUsageRecord {
+        // Balances are stocks: overdrafts are a real account state, so only
+        // non-finite values are rejected.
+        history
+            .upsert(DailyUsageRecord {
                 date: "2026-07-19".into(),
                 slot: Some(49),
                 provider_id: "kimi_cn".into(),
                 requests: None,
                 total_tokens: None,
                 estimated_cost_cny: None,
-                balance_cny: Some(invalid),
-            });
-            assert_eq!(result, Err(CacheError::Invalid), "balance {invalid}");
-        }
+                balance_cny: Some(-1.0),
+            })
+            .expect("negative balance accepted");
+
+        let result = history.upsert(DailyUsageRecord {
+            date: "2026-07-19".into(),
+            slot: Some(50),
+            provider_id: "kimi_cn".into(),
+            requests: None,
+            total_tokens: None,
+            estimated_cost_cny: None,
+            balance_cny: Some(f64::NAN),
+        });
+        assert_eq!(result, Err(CacheError::Invalid));
 
         let records = history.load().expect("load");
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 2);
         assert_eq!(records[0].balance_cny, Some(52.5));
+        assert_eq!(records[1].balance_cny, Some(-1.0));
+    }
+
+    #[test]
+    fn quarantines_corrupt_history_and_restarts_from_the_new_record() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+        let history_dir = dir.join("history");
+        std::fs::create_dir_all(&history_dir).expect("create history dir");
+        std::fs::write(
+            history_dir.join("daily-usage.json"),
+            r#"[{"date":"2026-07-01","slot":nonsense]"#,
+        )
+        .expect("seed corrupt file");
+
+        // The corrupt file must not fail the write forever: it is quarantined
+        // and history restarts from the incoming record.
+        history
+            .upsert(DailyUsageRecord {
+                date: "2026-07-19".into(),
+                slot: None,
+                provider_id: "glm".into(),
+                requests: Some(1),
+                total_tokens: Some(100),
+                estimated_cost_cny: None,
+                balance_cny: None,
+            })
+            .expect("upsert self-heals over a corrupt file");
+
+        let records = history.load().expect("load");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].provider_id, "glm");
+        assert!(history_dir.join("daily-usage.corrupt").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovers_history_from_a_stranded_tmp_file() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+        let history_dir = dir.join("history");
+        std::fs::create_dir_all(&history_dir).expect("create history dir");
+        // Simulate a crash between remove and rename: only the tmp survives.
+        std::fs::write(
+            history_dir.join("daily-usage.tmp"),
+            r#"[{"date":"2026-07-01","slot":null,"providerId":"glm","requests":3,"totalTokens":300,"estimatedCostCny":null}]"#,
+        )
+        .expect("seed stranded tmp");
+
+        let records = history.load().expect("load recovers the tmp copy");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].total_tokens, Some(300));
+        assert!(history_dir.join("daily-usage.json").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_all_skips_and_quarantines_a_corrupt_snapshot_file() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = SnapshotCache::new(&dir);
+        cache
+            .save("kimi_cn", "online", serde_json::json!({"a": 1}))
+            .expect("save first");
+        cache
+            .save("minimax_cn", "online", serde_json::json!({"b": 2}))
+            .expect("save second");
+        std::fs::write(
+            dir.join("cache").join("kimi_cn.json"),
+            r#"{half-written"#,
+        )
+        .expect("corrupt one cache file");
+
+        // The healthy snapshot stays visible; the corrupt one is quarantined.
+        let snapshots = cache.load_all().expect("load_all tolerates bad files");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].provider_id, "minimax_cn");
+        assert!(dir.join("cache").join("kimi_cn.corrupt").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_all_recovers_a_stranded_tmp_snapshot() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = SnapshotCache::new(&dir);
+        std::fs::create_dir_all(dir.join("cache")).expect("create cache dir");
+        std::fs::write(
+            dir.join("cache").join("kimi_cn.tmp"),
+            r#"{"providerId":"kimi_cn","kind":"online","savedAtMs":1,"snapshot":{}}"#,
+        )
+        .expect("seed stranded tmp");
+
+        let snapshots = cache.load_all().expect("load_all recovers tmp");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].provider_id, "kimi_cn");
     }
 
     #[test]
