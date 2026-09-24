@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   baseProviderId,
+  beijingDayRange,
   computeTimeWindowElapsedPercent,
-  credentialHint,
   formatCooldown,
   formatCny,
   formatProviderChangeValue,
@@ -13,7 +13,6 @@ import {
   formatResetRemainingText,
   instanceIndexOf,
   isProviderInstanceId,
-  localDayRange,
   localDayRangeMs,
   localQuarterSlot,
   selectBalanceTrend,
@@ -84,12 +83,19 @@ describe("summarizeProviders", () => {
   });
 });
 
-describe("localDayRange", () => {
-  it("formats the selected local calendar day for GLM monitor queries", () => {
-    expect(localDayRange(new Date(2026, 6, 10, 14, 30))).toEqual({
-      startTime: "2026-07-10 00:00:00",
-      endTime: "2026-07-10 23:59:59",
+describe("beijingDayRange", () => {
+  it("formats the Beijing-calendar day for GLM monitor queries", () => {
+    // GLM interprets the time strings as Beijing time; the window follows
+    // UTC+8, not the machine timezone. 20:30Z is already 04:30 the next
+    // Beijing day.
+    expect(beijingDayRange(new Date("2026-07-10T20:30:00Z"))).toEqual({
+      startTime: "2026-07-11 00:00:00",
+      endTime: "2026-07-11 23:59:59",
     });
+    // 10:00Z is 18:00 the same Beijing day.
+    expect(beijingDayRange(new Date("2026-07-10T10:00:00Z")).startTime).toBe(
+      "2026-07-10 00:00:00",
+    );
   });
 
   it("returns exact local midnight boundaries for online analytics", () => {
@@ -191,6 +197,27 @@ describe("selectBalanceTrend", () => {
     expect(selectBalanceTrend([
       { date: "2026-07-13", slot: null, providerId: "glm", requests: 5, totalTokens: 500, estimatedCostCny: null },
     ], "all", "all", new Date(2026, 6, 13))).toEqual([]);
+  });
+
+  it("drops deleted instances from the curve when alive ids are given", () => {
+    // minimax_cn was deleted after 07-11: its last balance is a stale stock
+    // and must stop carrying into the 合计 curve, matching 今日消耗.
+    const records: DailyUsageRecord[] = [
+      { date: "2026-07-11", slot: null, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 50 },
+      { date: "2026-07-11", slot: null, providerId: "minimax_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 30 },
+      { date: "2026-07-12", slot: null, providerId: "kimi_cn", requests: null, totalTokens: null, estimatedCostCny: null, balanceCny: 45 },
+    ];
+    const alive = new Set(["kimi_cn"]);
+
+    expect(selectBalanceTrend(records, "all", "all", new Date(2026, 6, 13), alive)).toEqual([
+      { date: "2026-07-11", label: "07/11", balanceCny: 50, providers: 1 },
+      { date: "2026-07-12", label: "07/12", balanceCny: 45, providers: 1 },
+    ]);
+
+    // Without the filter the historical carry-forward is unchanged.
+    expect(selectBalanceTrend(records, "all", "all", new Date(2026, 6, 13))[1]).toEqual({
+      date: "2026-07-12", label: "07/12", balanceCny: 75, providers: 2,
+    });
   });
 });
 
@@ -432,15 +459,6 @@ describe("selectDailyTrend intraday + latest-slot collapse", () => {
   });
 });
 
-describe("credentialHint", () => {
-  it("distinguishes subscription keys from pay-as-you-go keys", () => {
-    expect(credentialHint("kimi_cn")).toContain("sk-kimi-");
-    expect(credentialHint("kimi_cn")).toContain("Moonshot");
-    expect(credentialHint("minimax_cn")).toContain("sk-cp-");
-    expect(credentialHint("minimax_cn")).toContain("按量 API Key 不可查询");
-  });
-});
-
 describe("quota detail formatting", () => {
   it("keeps used, remaining and limit values visible", () => {
     expect(
@@ -476,11 +494,13 @@ describe("time window progress", () => {
   });
 
   it("formats remaining time text from a reset timestamp", () => {
-    const reset = new Date("2026-07-20T00:00:00Z").getTime();
-    const now = new Date("2026-07-15T12:00:00Z").getTime();
+    // Local-time construction keeps the weekday assertion timezone-independent:
+    // the reset lands on Monday 2026-07-20 while "now" is Wednesday.
+    const reset = new Date(2026, 6, 20, 8, 0).getTime();
+    const now = new Date(2026, 6, 15, 12, 0).getTime();
 
     const text = formatResetRemainingText(reset, now);
-    expect(text).toContain("周三");
+    expect(text).toContain("周一");
     expect(text).toContain("剩余");
   });
 

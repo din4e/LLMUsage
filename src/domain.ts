@@ -94,10 +94,14 @@ export function isProviderInstanceId(instanceId: string, baseId: string): boolea
   return baseProviderId(instanceId) === baseId;
 }
 
-export function localDayRange(date = new Date()): { startTime: string; endTime: string } {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+/** GLM 监控接口按北京时间解释 `YYYY-MM-DD HH:MM:SS` 时间串，其计费日是
+ * 北京时间的「今日」。窗口必须按 UTC+8 构造，而不是本机时区，否则非
+ * UTC+8 用户的「今日 Token」与 GLM 计费日错位。 */
+export function beijingDayRange(date = new Date()): { startTime: string; endTime: string } {
+  const beijing = new Date(date.getTime() + 8 * 3_600_000);
+  const year = beijing.getUTCFullYear();
+  const month = String(beijing.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(beijing.getUTCDate()).padStart(2, "0");
   const prefix = `${year}-${month}-${day}`;
   return { startTime: `${prefix} 00:00:00`, endTime: `${prefix} 23:59:59` };
 }
@@ -288,16 +292,21 @@ export function selectProviderChangeSeries(
  *  provider) holds the balance at sync time, so a bucket's representative is
  *  the provider's LAST KNOWN balance — never a sum over time. Providers sync
  *  at different moments, so earlier buckets carry forward each provider's
- *  last sample; "all" sums every carrying instance into 合计余额. */
+ *  last sample; "all" sums every carrying instance into 合计余额.
+ *  `aliveInstanceIds`, when provided, restricts the curve to instances that
+ *  still exist — a deleted account's last balance is a stale stock, unlike
+ *  the Token trend where its historical flow legitimately stays. */
 export function selectBalanceTrend(
   records: DailyUsageRecord[],
   range: TrendRange,
   providerId: string,
   today = new Date(),
+  aliveInstanceIds?: ReadonlySet<string>,
 ): BalanceTrendPoint[] {
   const todayKey = localDateKey(today);
   const inProvider = (record: DailyUsageRecord): boolean =>
-    providerId === "all" || isProviderInstanceId(record.providerId, providerId);
+    (providerId === "all" || isProviderInstanceId(record.providerId, providerId))
+    && (aliveInstanceIds == null || aliveInstanceIds.has(record.providerId));
 
   // bucket key = slot index (24h) or date string (daily); one sample per
   // (bucket, provider), keeping the newest when keys collide.
@@ -483,7 +492,9 @@ export function formatResetRemainingText(
 ): string | null {
   if (!Number.isFinite(resetAtMs)) return null;
   const remainingMs = Math.max(0, resetAtMs - nowMs);
-  const dayIndex = new Date(nowMs).getDay();
+  // The label says which weekday the reset lands on — read it from the reset
+  // moment, not from "today" (a tomorrow reset must not read as today).
+  const dayIndex = new Date(resetAtMs).getDay();
   return `${WEEKDAY_LABELS[dayIndex]} · 剩余 ${formatDuration(remainingMs)}`;
 }
 
@@ -498,16 +509,6 @@ export function formatDuration(durationMs: number): string {
     hours > 0 ? `${hours} 小时` : "",
     minutes > 0 ? `${minutes} 分钟` : "",
   ].filter(Boolean).join(" ");
-}
-
-export function credentialHint(providerId: string): string {
-  if (providerId === "kimi_cn") {
-    return "Kimi Code 请使用会员控制台生成的 Key（通常以 sk-kimi- 开头）；Moonshot 开放平台 Key 也可配置，将自动查询 API 余额。";
-  }
-  if (providerId === "minimax_cn" || providerId === "minimax_global") {
-    return "请使用 Token Plan 订阅 Key（通常以 sk-cp- 开头）；普通按量 API Key 不可查询套餐用量。";
-  }
-  return "密钥由 Windows DPAPI 加密，仅当前用户可解密，不会写入数据库或日志。";
 }
 
 export function summarizeProviders(providers: ProviderMetrics[]): ProviderMetrics {

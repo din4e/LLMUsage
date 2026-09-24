@@ -6,6 +6,7 @@ import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plug
 import { renderProviderDetails } from "./details";
 import {
   baseProviderId,
+  beijingDayRange,
   formatCny,
   formatCooldown,
   formatInteger,
@@ -14,7 +15,6 @@ import {
   instanceIndexOf,
   isProviderInstanceId,
   localDateKey,
-  localDayRange,
   localDayRangeMs,
   localQuarterSlot,
   selectBalanceTrend,
@@ -155,6 +155,7 @@ const failedSyncInstances = new Map<string, string>();
 const PROVIDER_ORDER_KEY = "llm-usage:provider-order";
 const INSTANCE_REMARKS_KEY = "llm-usage:instance-remarks";
 const AUTOSTART_KEY = "llm-usage:autostart-enabled";
+const THEME_LIGHT_KEY = "llm-usage:theme-light";
 const instanceRemarks = loadSavedInstanceRemarks();
 const savedInstanceOrder = loadSavedInstanceOrder();
 let dragSourceRow: HTMLElement | null = null;
@@ -164,7 +165,7 @@ let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
 let selectedTrendMetric: "tokens" | "balance" = "tokens";
 let selectedRecentChangeMetric: ProviderChangeMetric = "tokens";
-const APP_VERSION_FALLBACK = "0.1.5";
+const APP_VERSION_FALLBACK = "0.1.6";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
@@ -195,7 +196,9 @@ function renderTrend() {
       : selectedTrendRange === "24h" ? "今日 Token 消耗" : "每日 Token 消耗";
   }
   if (selectedTrendMetric === "balance") {
-    const points = selectBalanceTrend(records, selectedTrendRange, providerId);
+    // Balances are current stocks: deleted instances drop out of the curve,
+    // matching the 今日消耗 tile's aggregation (Token history keeps them).
+    const points = selectBalanceTrend(records, selectedTrendRange, providerId, new Date(), configuredInstanceIds);
     renderBalanceTrendChart(
       trendChart,
       trendEmpty,
@@ -317,7 +320,9 @@ async function loadDailyUsage() {
     try {
       dailyUsageRecords = await invoke<DailyUsageRecord[]>("load_daily_usage");
     } catch {
+      // A failed history read used to blank the trends silently; surface it.
       dailyUsageRecords = [];
+      setStatus("本地用量历史不可用", "error");
     }
   }
   renderTrendProviderOptions();
@@ -809,6 +814,15 @@ function renderGlm(instanceId: string, snapshot: GlmSnapshot) {
     if (percent) percent.textContent = `${snapshot.usedPercent.toFixed(1)}%`;
     const progress = row.querySelector<HTMLProgressElement>(".quota-progress");
     if (progress) progress.value = snapshot.usedPercent;
+    // Write the hint on every render (like renderOnline) so a successful
+    // sync clears any leftover "同步失败" copy instead of waiting for the
+    // next updateCooldown tick.
+    const quotaHint = row.querySelector<HTMLElement>(".quota-hint");
+    if (quotaHint) {
+      quotaHint.textContent = snapshot.cooldownEndsAtMs
+        ? formatCooldown(snapshot.cooldownEndsAtMs)
+        : "重置时间未知";
+    }
   }
   renderProviderDetails(instanceId, snapshot.detailSections);
   updateCooldown();
@@ -891,20 +905,22 @@ function renderTotals() {
 }
 
 function updateCooldown() {
-  for (const [instanceId, snapshot] of glmSnapshots) {
-    // Failed instances keep their sync-error hint; a stale cooldown countdown
-    // computed from cached data would read as live again.
-    if (failedSyncInstances.has(instanceId)) continue;
+  // Both GLM and online rows tick every 30 s. Failed instances keep their
+  // sync-error hint; a stale countdown computed from cached data would read
+  // as live again. Rows without a known reset keep their existing hint
+  // (GLM: "重置时间未知"; online: the source label).
+  const tick = (instanceId: string, cooldownEndsAtMs: number) => {
+    if (failedSyncInstances.has(instanceId) || !cooldownEndsAtMs) return;
     for (const row of providerRows(instanceId)) {
       const hint = row.querySelector<HTMLElement>(".quota-hint");
-      // cooldownEndsAtMs is 0 when the tightest window has no known reset;
-      // formatting that would read as "即将恢复" forever.
-      if (hint) {
-        hint.textContent = snapshot.cooldownEndsAtMs
-          ? formatCooldown(snapshot.cooldownEndsAtMs)
-          : "";
-      }
+      if (hint) hint.textContent = formatCooldown(cooldownEndsAtMs);
     }
+  };
+  for (const [instanceId, snapshot] of glmSnapshots) {
+    tick(instanceId, snapshot.cooldownEndsAtMs);
+  }
+  for (const [instanceId, snapshot] of onlineSnapshots) {
+    tick(instanceId, snapshot.cooldownEndsAtMs ?? 0);
   }
 }
 
@@ -943,13 +959,14 @@ async function syncGlm(instanceId: string): Promise<boolean> {
       providerId: instanceId,
       localDate: localDateKey(),
       slot: localQuarterSlot(),
-      ...localDayRange(),
+      ...beijingDayRange(),
     }));
     clearSyncFailed(instanceId);
     return true;
   } catch (reason) {
-    const error = reason as CommandError;
-    const message = error.message ?? "同步失败，请稍后重试";
+    // Prefix with the instance name like syncOnline so multi-instance setups
+    // can tell which GLM key failed.
+    const message = instanceError(instanceId, "同步失败，请稍后重试", reason);
     setStatus(message, "error");
     markSyncFailed(instanceId, message);
     return false;
@@ -1155,7 +1172,9 @@ function applyAutoSync(seconds: number) {
     window.clearInterval(autoSyncTimer);
     autoSyncTimer = null;
   }
-  if (seconds <= 0) {
+  // NaN passes a `seconds <= 0` check but setInterval treats it as 0 ms and
+  // hammers the sync endpoints; treat it as "off".
+  if (!Number.isFinite(seconds) || seconds <= 0) {
     setStatus("自动拉取已关闭");
     return;
   }
@@ -1186,7 +1205,25 @@ refreshButton?.addEventListener("click", async () => {
 themeButton?.addEventListener("click", () => {
   const light = document.documentElement.toggleAttribute("data-light");
   themeButton.setAttribute("aria-label", light ? "切换深色主题" : "切换浅色主题");
+  try {
+    window.localStorage.setItem(THEME_LIGHT_KEY, String(light));
+  } catch {
+    // Theme persistence is a convenience; ignore storage failures.
+  }
 });
+
+// Restore the persisted theme (index.html ships light) and keep the toggle's
+// aria-label in sync before first use.
+(function initTheme() {
+  let light = true;
+  try {
+    light = window.localStorage.getItem(THEME_LIGHT_KEY) !== "false";
+  } catch {
+    // Storage unavailable: keep the default light theme.
+  }
+  document.documentElement.toggleAttribute("data-light", light);
+  themeButton?.setAttribute("aria-label", light ? "切换深色主题" : "切换浅色主题");
+})();
 
 /** Reflects the boot-start registration on the about-page switch. */
 function updateAutostartToggle(enabled: boolean) {
@@ -1273,6 +1310,7 @@ document.addEventListener("click", (event) => {
   }
   if (button.dataset.action === "close-confirm-dialog") {
     confirmDialog?.close();
+    return;
   }
   if (button.dataset.action === "set-auto-sync") {
     const seconds = Number(button.dataset.seconds ?? "0");
@@ -1323,6 +1361,7 @@ document.addEventListener("click", (event) => {
   }
   if (button.dataset.action === "close-rename-dialog") {
     renameDialog?.close();
+    return;
   }
 });
 
@@ -1429,7 +1468,7 @@ providerForm?.addEventListener("submit", async (event) => {
         apiKey: credential,
         localDate: localDateKey(),
         slot: localQuarterSlot(),
-        ...localDayRange(),
+        ...beijingDayRange(),
       });
       renderGlm(selectedInstance, snapshot);
     } else {
@@ -1565,6 +1604,20 @@ recentChangeMetric?.addEventListener("click", (event) => {
   renderRecentChange();
 });
 window.setInterval(updateCooldown, 30_000);
+// The drag handles only listen for their own mouseup, so a press that moves
+// off the handle and releases elsewhere would leave the whole row draggable.
+// This document-level fallback releases every row except the one mid-drag
+// (pointer events are canceled once a native drag starts, so skipping the
+// active drag source keeps real reordering intact). `pointerdown` matters
+// most: it clears the stale state before the next press could trigger a
+// dragstart, while the handle's own (later) mousedown still re-enables it.
+for (const eventType of ["pointerdown", "pointerup", "pointercancel"] as const) {
+  document.addEventListener(eventType, () => {
+    for (const row of document.querySelectorAll<HTMLElement>(".provider-row")) {
+      if (row !== dragSourceRow) row.draggable = false;
+    }
+  });
+}
 void initializeWindowControls();
 void initAutostartToggle();
 if (isTauri()) void listen("tray-sync", () => void syncAll());
