@@ -21,6 +21,58 @@ function formatCurrencyExact(value: number): string {
 const svgElement = <K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] =>
   document.createElementNS("http://www.w3.org/2000/svg", name);
 
+/** Responsive-mode coordinate width of the trend SVG (matches index.html). */
+const TREND_BASE_WIDTH = 900;
+const TREND_HEIGHT = 190;
+/** Floor for room per data point; below it the chart scrolls instead of
+ *  squeezing (96 intraday quarter slots used to collapse into ~9px gaps). */
+const MIN_POINT_SPACING = 24;
+
+function wrapContentWidth(wrap: HTMLElement): number {
+  const styles = getComputedStyle(wrap);
+  const width = wrap.clientWidth
+    - Number.parseFloat(styles.paddingLeft || "0")
+    - Number.parseFloat(styles.paddingRight || "0");
+  return Number.isFinite(width) && width > 0 ? width : TREND_BASE_WIDTH;
+}
+
+/** Fits the trend SVG to its panel. Points keep at least MIN_POINT_SPACING px
+ *  of room; when the panel is narrower than that the SVG renders 1:1 at its
+ *  natural width and the wrapper scrolls horizontally. Otherwise the chart
+ *  stays responsive (base viewBox scaled by CSS width). Returns the drawing
+ *  width and the on-screen px between neighbouring points. */
+function fitTrendCanvas(
+  chart: SVGSVGElement,
+  pointCount: number,
+  plot: { left: number; right: number },
+): { width: number; pxPerPoint: number } {
+  const wrap = chart.parentElement;
+  // Read the scroll state before resizing: a view already sitting on the
+  // latest data (including the non-scrolling case) stays pinned after render.
+  const pinnedRight = !wrap || wrap.scrollWidth - wrap.scrollLeft - wrap.clientWidth < 8;
+  const available = wrap ? wrapContentWidth(wrap) : TREND_BASE_WIDTH;
+  const naturalWidth = plot.left + plot.right + Math.max(pointCount - 1, 1) * MIN_POINT_SPACING;
+  const scrolling = naturalWidth > available;
+  const width = scrolling ? naturalWidth : TREND_BASE_WIDTH;
+  const scale = scrolling ? 1 : available / TREND_BASE_WIDTH;
+  chart.setAttribute("viewBox", `0 0 ${width} ${TREND_HEIGHT}`);
+  chart.style.width = scrolling ? `${width}px` : "";
+  if (wrap && scrolling && pinnedRight) wrap.scrollLeft = wrap.scrollWidth;
+  return {
+    width,
+    pxPerPoint: pointCount > 1
+      ? ((width - plot.left - plot.right) / (pointCount - 1)) * scale
+      : Infinity,
+  };
+}
+
+/** Restores the responsive base canvas after the last render left the SVG in
+ *  scroll mode (an overflowing empty chart would otherwise keep scrolling). */
+function resetTrendCanvas(chart: SVGSVGElement) {
+  chart.setAttribute("viewBox", `0 0 ${TREND_BASE_WIDTH} ${TREND_HEIGHT}`);
+  chart.style.width = "";
+}
+
 const providerChangeMetricLabels: Record<ProviderChangeMetric, string> = {
   requests: "请求",
   tokens: "Token",
@@ -150,12 +202,13 @@ export function renderDailyTrendChart(
     if (empty) empty.textContent = "同步供应商后，将从当天开始积累每日趋势。";
     if (descriptionElement) descriptionElement.textContent = "本地保存的非敏感日汇总 · 暂无历史数据";
     chart.setAttribute("aria-label", "所选范围暂无每日用量数据");
+    resetTrendCanvas(chart);
     return;
   }
 
-  const width = 900;
-  const height = 190;
   const plot = { left: 48, right: 16, top: 12, bottom: 26 };
+  const { width, pxPerPoint } = fitTrendCanvas(chart, points.length, plot);
+  const height = TREND_HEIGHT;
   const plotWidth = width - plot.left - plot.right;
   const plotHeight = height - plot.top - plot.bottom;
   const baseY = plot.top + plotHeight;
@@ -222,7 +275,12 @@ export function renderDailyTrendChart(
   chart.append(path);
 
   const lastIndex = points.length - 1;
-  const labelIndexes = new Set([0, Math.floor(lastIndex / 2), lastIndex]);
+  // Date labels step by measured spacing so the scrolling canvas stays readable.
+  const labelStep = Math.max(1, Math.ceil(80 / pxPerPoint));
+  const labelIndexes = new Set<number>();
+  for (let index = 0; index <= lastIndex; index += labelStep) labelIndexes.add(index);
+  labelIndexes.add(lastIndex);
+  const dense = pxPerPoint < 20;
   points.forEach((point, index) => {
     const [pointX, pointY] = coords[index]!;
     const circle = svgElement("circle");
@@ -230,10 +288,7 @@ export function renderDailyTrendChart(
     if (index === lastIndex) circle.classList.add("latest");
     circle.setAttribute("cx", String(pointX));
     circle.setAttribute("cy", String(pointY));
-    circle.setAttribute(
-      "r",
-      index === lastIndex ? (points.length > 48 ? "2.6" : "5") : points.length > 48 ? "2" : "3.5",
-    );
+    circle.setAttribute("r", index === lastIndex ? (dense ? "2.6" : "5") : dense ? "2" : "3.5");
     circle.setAttribute("tabindex", "0");
     const cost = point.estimatedCostCny == null
       ? "成本不可用"
@@ -297,12 +352,13 @@ export function renderBalanceTrendChart(
     if (empty) empty.textContent = "同步含余额的供应商后，将随同步积累余额变化曲线。";
     if (descriptionElement) descriptionElement.textContent = "本地保存的非敏感日汇总 · 暂无余额数据";
     chart.setAttribute("aria-label", "所选范围暂无余额数据");
+    resetTrendCanvas(chart);
     return;
   }
 
-  const width = 900;
-  const height = 190;
   const plot = { left: 48, right: 16, top: 12, bottom: 26 };
+  const { width, pxPerPoint } = fitTrendCanvas(chart, points.length, plot);
+  const height = TREND_HEIGHT;
   const plotWidth = width - plot.left - plot.right;
   const plotHeight = height - plot.top - plot.bottom;
   const baseY = plot.top + plotHeight;
@@ -368,7 +424,12 @@ export function renderBalanceTrendChart(
   chart.append(path);
 
   const lastIndex = points.length - 1;
-  const labelIndexes = new Set([0, Math.floor(lastIndex / 2), lastIndex]);
+  // Date labels step by measured spacing so the scrolling canvas stays readable.
+  const labelStep = Math.max(1, Math.ceil(80 / pxPerPoint));
+  const labelIndexes = new Set<number>();
+  for (let index = 0; index <= lastIndex; index += labelStep) labelIndexes.add(index);
+  labelIndexes.add(lastIndex);
+  const dense = pxPerPoint < 20;
   points.forEach((point, index) => {
     const [pointX, pointY] = coords[index]!;
     const circle = svgElement("circle");
@@ -376,10 +437,7 @@ export function renderBalanceTrendChart(
     if (index === lastIndex) circle.classList.add("latest");
     circle.setAttribute("cx", String(pointX));
     circle.setAttribute("cy", String(pointY));
-    circle.setAttribute(
-      "r",
-      index === lastIndex ? (points.length > 48 ? "2.6" : "5") : points.length > 48 ? "2" : "3.5",
-    );
+    circle.setAttribute("r", index === lastIndex ? (dense ? "2.6" : "5") : dense ? "2" : "3.5");
     circle.setAttribute("tabindex", "0");
     const providerScope = point.providers > 1 ? ` · ${point.providers} 个实例` : "";
     const pointDescription = `${point.label}，余额 ${formatCurrencyExact(point.balanceCny)}${providerScope}`;

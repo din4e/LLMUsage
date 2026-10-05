@@ -1593,6 +1593,26 @@ trendRange?.addEventListener("click", (event) => {
   }
   renderTrend();
 });
+// Dense trend charts pan horizontally; translate plain mouse-wheel scrolls so
+// they pan too (trackpad deltaX gestures already scroll natively).
+const trendChartWrap = document.querySelector<HTMLElement>(".trend-chart-wrap");
+if (trendChartWrap) {
+  trendChartWrap.addEventListener("wheel", (event) => {
+    const max = trendChartWrap.scrollWidth - trendChartWrap.clientWidth;
+    if (event.deltaX !== 0 || max <= 0) return;
+    const next = Math.min(Math.max(trendChartWrap.scrollLeft + event.deltaY, 0), max);
+    if (next !== trendChartWrap.scrollLeft) {
+      event.preventDefault();
+      trendChartWrap.scrollLeft = next;
+    }
+  }, { passive: false });
+}
+// The scroll/responsive cutoff depends on panel width, so refit on resize.
+let trendResizeTimer: number | undefined;
+window.addEventListener("resize", () => {
+  window.clearTimeout(trendResizeTimer);
+  trendResizeTimer = window.setTimeout(renderTrend, 150);
+});
 recentChangeProvider?.addEventListener("change", renderRecentChange);
 recentChangeMetric?.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLButtonElement>("button[data-change-metric]");
