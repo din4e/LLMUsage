@@ -1,7 +1,7 @@
 import {
   formatInteger,
   formatProviderChangeValue,
-  formatQuarterSlot,
+  formatMinuteOfDay,
   type BalanceTrendPoint,
   type DailyTrendPoint,
   type ProviderChangeMetric,
@@ -82,7 +82,7 @@ const providerChangeMetricLabels: Record<ProviderChangeMetric, string> = {
 
 function providerChangePointLabel(point: ProviderChangePoint): string {
   const date = point.date.slice(5).replace("-", "/");
-  return point.slot == null ? date : `${date} ${formatQuarterSlot(point.slot)}`;
+  return point.minute == null ? date : `${date} ${formatMinuteOfDay(point.minute)}`;
 }
 
 export function renderProviderChangeChart(

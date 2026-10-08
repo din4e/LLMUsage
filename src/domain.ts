@@ -8,7 +8,10 @@ export type TrendRange = "24h" | "7d" | "30d" | "all";
 
 export interface DailyUsageRecord {
   date: string;
+  /** Legacy 15-minute slot (0..95) from older versions; null on new records. */
   slot: number | null;
+  /** Minutes since local midnight (0..1439) on new records; null on legacy ones. */
+  minute?: number | null;
   providerId: string;
   requests: number | null;
   totalTokens: number | null;
@@ -25,14 +28,14 @@ export interface ProviderRecentChange {
   currentValue: number;
   delta: number;
   previousDate: string;
-  previousSlot: number | null;
+  previousMinute: number | null;
   currentDate: string;
-  currentSlot: number | null;
+  currentMinute: number | null;
 }
 
 export interface ProviderChangePoint {
   date: string;
-  slot: number | null;
+  minute: number | null;
   value: number;
 }
 
@@ -119,14 +122,30 @@ export function localDateKey(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-/** Local-day 15-minute slot index 0..95 (e.g. 12:07 → 48). */
+/** Local-day 15-minute slot index 0..95 (e.g. 12:07 → 48). Legacy helper. */
 export function localQuarterSlot(date = new Date()): number {
   return Math.floor((date.getHours() * 60 + date.getMinutes()) / 15);
 }
 
-/** Format a 15-minute slot index as HH:MM (slot 48 → "12:00"). */
-export function formatQuarterSlot(slot: number): string {
-  const totalMinutes = Math.max(0, Math.min(95, Math.trunc(slot))) * 15;
+/** Minutes since local midnight 0..1439 (e.g. 12:07 → 727). */
+export function localMinuteOfDay(date = new Date()): number {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+/**
+ * A record's intraday position in minutes since midnight. Legacy 15-minute
+ * slots resolve to their quarter start so old history lines up with new
+ * minute-level samples; null (daily rollup) is -1.
+ */
+export function recordMinuteOfDay(record: Pick<DailyUsageRecord, "minute" | "slot">): number {
+  if (record.minute != null) return record.minute;
+  if (record.slot != null) return record.slot * 15;
+  return -1;
+}
+
+/** Format minutes since midnight as HH:MM (727 → "12:07", slot 48 → "12:00"). */
+export function formatMinuteOfDay(minute: number): string {
+  const totalMinutes = Math.max(0, Math.min(1439, Math.trunc(minute)));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
@@ -139,21 +158,24 @@ export function selectDailyTrend(
   today = new Date(),
 ): DailyTrendPoint[] {
   const todayKey = localDateKey(today);
-  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const minuteRank = (record: DailyUsageRecord): number => recordMinuteOfDay(record);
 
   if (range === "24h") {
-    // Intraday: 15-minute slots for the current local day only.
-    const bySlot = new Map<number, ProviderMetrics[]>();
+    // Intraday: minute-level samples for the current local day only. Legacy
+    // 15-minute records land on their quarter start, so old history lines up.
+    const byMinute = new Map<number, ProviderMetrics[]>();
     for (const record of records) {
-      if (record.date !== todayKey || record.slot == null) continue;
+      if (record.date !== todayKey) continue;
+      if (record.slot == null && record.minute == null) continue;
       if (providerId !== "all" && record.providerId !== providerId) continue;
-      const metrics = bySlot.get(record.slot) ?? [];
+      const minute = recordMinuteOfDay(record);
+      const metrics = byMinute.get(minute) ?? [];
       metrics.push(record);
-      bySlot.set(record.slot, metrics);
+      byMinute.set(minute, metrics);
     }
-    return Array.from(bySlot, ([slot, metrics]) => ({
+    return Array.from(byMinute, ([minute, metrics]) => ({
       date: todayKey,
-      label: formatQuarterSlot(slot),
+      label: formatMinuteOfDay(minute),
       ...summarizeProviders(metrics),
     }))
       .filter((point) => point.totalTokens !== null)
@@ -173,7 +195,7 @@ export function selectDailyTrend(
     if (providerId !== "all" && record.providerId !== providerId) continue;
     const key = `${record.date}|${record.providerId}`;
     const existing = latest.get(key);
-    if (!existing || slotRank(record) >= slotRank(existing)) latest.set(key, record);
+    if (!existing || minuteRank(record) >= minuteRank(existing)) latest.set(key, record);
   }
 
   const byDate = new Map<string, ProviderMetrics[]>();
@@ -230,10 +252,10 @@ export function selectLatestProviderChange(
   providerId: string,
   metric: ProviderChangeMetric,
 ): ProviderRecentChange | null {
-  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const minuteRank = (record: DailyUsageRecord): number => recordMinuteOfDay(record);
   const samples = records
     .filter((record) => record.providerId === providerId && providerChangeValue(record, metric) != null)
-    .sort((left, right) => left.date.localeCompare(right.date) || slotRank(left) - slotRank(right));
+    .sort((left, right) => left.date.localeCompare(right.date) || minuteRank(left) - minuteRank(right));
   const current = samples[samples.length - 1];
   if (!current) return null;
 
@@ -254,9 +276,9 @@ export function selectLatestProviderChange(
     currentValue,
     delta: currentValue - previousValue,
     previousDate: previous.date,
-    previousSlot: previous.slot,
+    previousMinute: previous.minute ?? (previous.slot != null ? recordMinuteOfDay(previous) : null),
     currentDate: current.date,
-    currentSlot: current.slot,
+    currentMinute: current.minute ?? (current.slot != null ? recordMinuteOfDay(current) : null),
   };
 }
 
@@ -271,10 +293,10 @@ export function selectProviderChangeSeries(
 ): ProviderChangePoint[] {
   const limit = Number.isFinite(maxPoints) ? Math.max(0, Math.trunc(maxPoints)) : 12;
   if (limit === 0) return [];
-  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const minuteRank = (record: DailyUsageRecord): number => recordMinuteOfDay(record);
   const samples = records
     .filter((record) => record.providerId === providerId && providerChangeValue(record, metric) != null)
-    .sort((left, right) => left.date.localeCompare(right.date) || slotRank(left) - slotRank(right));
+    .sort((left, right) => left.date.localeCompare(right.date) || minuteRank(left) - minuteRank(right));
   const latestDate = samples[samples.length - 1]?.date;
   if (!latestDate) return [];
 
@@ -283,7 +305,7 @@ export function selectProviderChangeSeries(
     .slice(-limit)
     .map((record) => ({
       date: record.date,
-      slot: record.slot,
+      minute: record.minute ?? (record.slot != null ? recordMinuteOfDay(record) : null),
       value: providerChangeValue(record, metric) as number,
     }));
 }
@@ -308,7 +330,7 @@ export function selectBalanceTrend(
     (providerId === "all" || isProviderInstanceId(record.providerId, providerId))
     && (aliveInstanceIds == null || aliveInstanceIds.has(record.providerId));
 
-  // bucket key = slot index (24h) or date string (daily); one sample per
+  // bucket key = minute of day (24h) or date string (daily); one sample per
   // (bucket, provider), keeping the newest when keys collide.
   const samples = new Map<string, { order: number; providers: Map<string, number> }>();
   const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -319,9 +341,11 @@ export function selectBalanceTrend(
     let bucketKey: string;
     let order: number;
     if (range === "24h") {
-      if (record.date !== todayKey || record.slot == null) continue;
-      bucketKey = String(record.slot);
-      order = record.slot;
+      if (record.date !== todayKey) continue;
+      if (record.slot == null && record.minute == null) continue;
+      const minute = recordMinuteOfDay(record);
+      bucketKey = String(minute);
+      order = minute;
     } else {
       if (record.date > todayKey || (range !== "all" && record.date < cutoffKey)) continue;
       bucketKey = record.date;
@@ -345,7 +369,7 @@ export function selectBalanceTrend(
     points.push({
       date: range === "24h" ? todayKey : bucketKey,
       label: range === "24h"
-        ? formatQuarterSlot(Number(bucketKey))
+        ? formatMinuteOfDay(Number(bucketKey))
         : bucketKey.slice(5).replace("-", "/"),
       balanceCny: sum,
       providers: carried.size,
@@ -372,9 +396,9 @@ export function selectTodaySpend(
   today = new Date(),
 ): Map<string, TodaySpend> {
   const todayKey = localDateKey(today);
-  const slotRank = (record: DailyUsageRecord): number => record.slot ?? -1;
+  const minuteRank = (record: DailyUsageRecord): number => recordMinuteOfDay(record);
   const chronological = (left: DailyUsageRecord, right: DailyUsageRecord): number =>
-    left.date.localeCompare(right.date) || slotRank(left) - slotRank(right);
+    left.date.localeCompare(right.date) || minuteRank(left) - minuteRank(right);
 
   const byInstance = new Map<string, DailyUsageRecord[]>();
   for (const record of records) {

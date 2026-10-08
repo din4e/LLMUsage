@@ -9,12 +9,13 @@ import {
   formatDuration,
   formatInteger,
   formatQuotaDetailValue,
-  formatQuarterSlot,
+  formatMinuteOfDay,
+  localMinuteOfDay,
+  recordMinuteOfDay,
   formatResetRemainingText,
   instanceIndexOf,
   isProviderInstanceId,
   localDayRangeMs,
-  localQuarterSlot,
   selectBalanceTrend,
   selectDailyTrend,
   selectLatestProviderChange,
@@ -139,12 +140,16 @@ describe("selectDailyTrend", () => {
 
 describe("15-minute slot helpers", () => {
   it("maps local time to a 0..95 slot and back to HH:MM", () => {
-    expect(localQuarterSlot(new Date(2026, 6, 13, 0, 0))).toBe(0);
-    expect(localQuarterSlot(new Date(2026, 6, 13, 12, 7))).toBe(48);
-    expect(localQuarterSlot(new Date(2026, 6, 13, 23, 59))).toBe(95);
-    expect(formatQuarterSlot(0)).toBe("00:00");
-    expect(formatQuarterSlot(48)).toBe("12:00");
-    expect(formatQuarterSlot(95)).toBe("23:45");
+    expect(localMinuteOfDay(new Date(2026, 6, 13, 0, 0))).toBe(0);
+    expect(localMinuteOfDay(new Date(2026, 6, 13, 12, 7))).toBe(727);
+    expect(localMinuteOfDay(new Date(2026, 6, 13, 23, 59))).toBe(1439);
+    expect(formatMinuteOfDay(0)).toBe("00:00");
+    expect(formatMinuteOfDay(727)).toBe("12:07");
+    expect(formatMinuteOfDay(1439)).toBe("23:59");
+    // Legacy 15-minute slots resolve onto the same minute axis.
+    expect(recordMinuteOfDay({ slot: 48, minute: null })).toBe(720);
+    expect(recordMinuteOfDay({ slot: null, minute: 727 })).toBe(727);
+    expect(recordMinuteOfDay({ slot: null, minute: null })).toBe(-1);
   });
 });
 
@@ -310,9 +315,9 @@ describe("selectLatestProviderChange", () => {
       currentValue: 13,
       delta: 3,
       previousDate: "2026-08-24",
-      previousSlot: 20,
+      previousMinute: 300,
       currentDate: "2026-08-24",
-      currentSlot: 28,
+      currentMinute: 420,
     });
   });
 
@@ -337,9 +342,9 @@ describe("selectLatestProviderChange", () => {
       currentValue: 88.5,
       delta: -1.5,
       previousDate: "2026-08-24",
-      previousSlot: 8,
+      previousMinute: 120,
       currentDate: "2026-08-24",
-      currentSlot: 12,
+      currentMinute: 180,
     });
   });
 
@@ -370,8 +375,8 @@ describe("selectProviderChangeSeries", () => {
     ];
 
     expect(selectProviderChangeSeries(records, "glm", "tokens", 2)).toEqual([
-      { date: "2026-08-24", slot: 16, value: 500 },
-      { date: "2026-08-24", slot: 24, value: 900 },
+      { date: "2026-08-24", minute: 240, value: 500 },
+      { date: "2026-08-24", minute: 360, value: 900 },
     ]);
   });
 
@@ -383,9 +388,9 @@ describe("selectProviderChangeSeries", () => {
     ];
 
     expect(selectProviderChangeSeries(records, "deepseek", "balance")).toEqual([
-      { date: "2026-08-22", slot: 80, value: 100 },
-      { date: "2026-08-23", slot: 40, value: 94 },
-      { date: "2026-08-24", slot: 12, value: 88 },
+      { date: "2026-08-22", minute: 1200, value: 100 },
+      { date: "2026-08-23", minute: 600, value: 94 },
+      { date: "2026-08-24", minute: 180, value: 88 },
     ]);
   });
 });

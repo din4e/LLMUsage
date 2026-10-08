@@ -36,8 +36,16 @@ pub struct SnapshotCache {
 #[serde(rename_all = "camelCase")]
 pub struct DailyUsageRecord {
     pub date: String,
+    /// Legacy 15-minute slot (0..=95). Kept for history written before
+    /// minute-level sampling; newer records leave this `None` and carry
+    /// `minute` instead. Never both.
     #[serde(default)]
     pub slot: Option<i16>,
+    /// Minutes since local midnight (0..=1439) — the sync minute itself, so a
+    /// 1-minute auto-sync cadence yields one trend point per minute instead
+    /// of overwriting the enclosing quarter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minute: Option<i16>,
     pub provider_id: String,
     pub requests: Option<u64>,
     pub total_tokens: Option<u64>,
@@ -47,6 +55,19 @@ pub struct DailyUsageRecord {
     /// Negative is legal — overdraft is a real account state.
     #[serde(default)]
     pub balance_cny: Option<f64>,
+}
+
+impl DailyUsageRecord {
+    /// The record's position within its day as minutes since midnight.
+    /// Legacy slots resolve to their quarter start; `None` (daily rollup)
+    /// sorts before every intraday sample.
+    pub fn minute_of_day(&self) -> i32 {
+        match (self.minute, self.slot) {
+            (Some(minute), _) => minute as i32,
+            (None, Some(slot)) => slot as i32 * 15,
+            (None, None) => -1,
+        }
+    }
 }
 
 pub struct DailyUsageHistory {
@@ -88,7 +109,7 @@ impl DailyUsageHistory {
         };
         records.retain(|existing| {
             existing.date != record.date
-                || existing.slot != record.slot
+                || existing.minute_of_day() != record.minute_of_day()
                 || existing.provider_id != record.provider_id
         });
         records.push(record);
@@ -96,7 +117,7 @@ impl DailyUsageHistory {
         records.sort_by(|left, right| {
             left.date
                 .cmp(&right.date)
-                .then(slot_rank(left).cmp(&slot_rank(right)))
+                .then(left.minute_of_day().cmp(&right.minute_of_day()))
                 .then(left.provider_id.cmp(&right.provider_id))
         });
         let parent = self.path.parent().ok_or(CacheError::Invalid)?;
@@ -304,23 +325,22 @@ fn is_valid_daily_record(record: &DailyUsageRecord) -> bool {
             .slot
             .is_none_or(|slot| (0..=95).contains(&slot))
         && record
+            .minute
+            .is_none_or(|minute| (0..=1439).contains(&minute))
+        && (record.minute.is_none() || record.slot.is_none())
+        && record
             .estimated_cost_cny
             .is_none_or(|value| value.is_finite() && value >= 0.0)
         && record.balance_cny.is_none_or(|value| value.is_finite())
 }
 
-/// Sort rank for the 15-minute slot within a day. `None` (daily rollup or a
-/// legacy pre-slot record) sorts before every real slot.
-fn slot_rank(record: &DailyUsageRecord) -> i16 {
-    record.slot.unwrap_or(-1)
-}
-
-/// Collapse 15-minute detail older than 30 days into one daily rollup
-/// (`slot = None`) per `(date, provider)`, keeping the day's latest sample.
-/// Usage figures are same-day cumulative snapshots, so the latest slot is the
-/// correct daily representative — never sum slots, which would inflate a day's
-/// tokens by the sample count. Bounds storage while keeping long-range daily
-/// trends. `today` is a `YYYY-MM-DD` reference taken from the new record's date.
+/// Collapse intraday detail older than 30 days into one daily rollup
+/// (`slot = None`, `minute = None`) per `(date, provider)`, keeping the day's
+/// latest sample. Usage figures are same-day cumulative snapshots, so the
+/// latest sample is the correct daily representative — never sum samples,
+/// which would inflate a day's tokens by the sample count. Bounds storage
+/// while keeping long-range daily trends. `today` is a `YYYY-MM-DD`
+/// reference taken from the new record's date.
 fn rollup_expired_records(records: &mut Vec<DailyUsageRecord>, today: &str) {
     let Ok(today_date) = NaiveDate::parse_from_str(today, "%Y-%m-%d") else {
         return;
@@ -342,7 +362,7 @@ fn rollup_expired_records(records: &mut Vec<DailyUsageRecord>, today: &str) {
         match expired.entry(key) {
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let existing = entry.get_mut();
-                if slot_rank(&record) > slot_rank(existing) {
+                if record.minute_of_day() > existing.minute_of_day() {
                     *existing = record;
                 }
             }
@@ -353,6 +373,7 @@ fn rollup_expired_records(records: &mut Vec<DailyUsageRecord>, today: &str) {
     }
     for record in expired.values_mut() {
         record.slot = None;
+        record.minute = None;
     }
     records.extend(fresh);
     records.extend(expired.into_values());
@@ -464,6 +485,53 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn minute_samples_dedupe_per_minute_and_bridge_legacy_slots() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-minute-history-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+        let record = |minute: Option<i16>, tokens: u64| DailyUsageRecord {
+            date: "2026-10-08".into(),
+            slot: None,
+            minute,
+            provider_id: "glm".into(),
+            requests: None,
+            total_tokens: Some(tokens),
+            estimated_cost_cny: None,
+            balance_cny: None,
+        };
+
+        // Two syncs inside the same minute replace each other…
+        history.upsert(record(Some(727), 100)).expect("first minute sample");
+        history.upsert(record(Some(727), 150)).expect("same-minute replacement");
+        // …adjacent minutes both survive, so a 1-minute cadence records one
+        // point per minute instead of collapsing into a quarter.
+        history.upsert(record(Some(728), 200)).expect("next minute sample");
+        // A legacy 15-minute record lands on its quarter start (720) and is a
+        // distinct point from minute 727.
+        history.upsert(DailyUsageRecord {
+            date: "2026-10-08".into(),
+            slot: Some(48),
+            minute: None,
+            provider_id: "glm".into(),
+            requests: None,
+            total_tokens: Some(80),
+            estimated_cost_cny: None,
+            balance_cny: None,
+        })
+        .expect("legacy slot sample");
+
+        let records = history.load().expect("load history");
+        let minutes: Vec<(i32, u64)> = records
+            .iter()
+            .map(|record| (record.minute_of_day(), record.total_tokens.unwrap_or_default()))
+            .collect();
+        assert_eq!(minutes, vec![(720, 80), (727, 150), (728, 200)]);
+    }
+
     fn upserts_daily_usage_by_date_and_provider() {
         let dir = std::env::temp_dir().join(format!(
             "llm-usage-daily-history-test-{}",
@@ -476,6 +544,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-13".into(),
                 slot: None,
+                minute: None,
                 provider_id: "glm".into(),
                 requests: Some(2),
                 total_tokens: Some(200),
@@ -487,6 +556,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-13".into(),
                 slot: None,
+                minute: None,
                 provider_id: "glm".into(),
                 requests: Some(3),
                 total_tokens: Some(350),
@@ -498,6 +568,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-13".into(),
                 slot: None,
+                minute: None,
                 provider_id: "openai_codex".into(),
                 requests: Some(4),
                 total_tokens: Some(700),
@@ -534,6 +605,7 @@ mod tests {
                         .upsert(DailyUsageRecord {
                             date: "2026-07-19".into(),
                             slot: None,
+                            minute: None,
                             provider_id: id,
                             requests: Some(1),
                             total_tokens: Some(100),
@@ -563,6 +635,7 @@ mod tests {
         let result = history.upsert(DailyUsageRecord {
             date: "2026-13-40".into(),
             slot: None,
+            minute: None,
             provider_id: "glm".into(),
             requests: Some(1),
             total_tokens: Some(10),
@@ -583,6 +656,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-19".into(),
                 slot: Some(48),
+                minute: None,
                 provider_id: "kimi_cn".into(),
                 requests: None,
                 total_tokens: None,
@@ -597,6 +671,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-19".into(),
                 slot: Some(49),
+                minute: None,
                 provider_id: "kimi_cn".into(),
                 requests: None,
                 total_tokens: None,
@@ -608,6 +683,7 @@ mod tests {
         let result = history.upsert(DailyUsageRecord {
             date: "2026-07-19".into(),
             slot: Some(50),
+            minute: None,
             provider_id: "kimi_cn".into(),
             requests: None,
             total_tokens: None,
@@ -642,6 +718,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-19".into(),
                 slot: None,
+                minute: None,
                 provider_id: "glm".into(),
                 requests: Some(1),
                 total_tokens: Some(100),
@@ -752,6 +829,7 @@ mod tests {
         let detail = |slot, tokens| DailyUsageRecord {
             date: "2026-07-19".into(),
             slot: Some(slot),
+            minute: None,
             provider_id: "glm".into(),
             requests: Some(1),
             total_tokens: Some(tokens),
@@ -783,6 +861,7 @@ mod tests {
         let detail = |slot, tokens| DailyUsageRecord {
             date: "2026-05-01".into(),
             slot: Some(slot),
+            minute: None,
             provider_id: "glm".into(),
             requests: Some(1),
             total_tokens: Some(tokens),
@@ -799,6 +878,7 @@ mod tests {
             .upsert(DailyUsageRecord {
                 date: "2026-07-19".into(),
                 slot: None,
+                minute: None,
                 provider_id: "glm".into(),
                 requests: Some(2),
                 total_tokens: Some(500),

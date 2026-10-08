@@ -186,8 +186,11 @@
               <div class="range-switch auto-sync-options" id="auto-sync-options" role="group" aria-label="自动拉取间隔">
                 <button type="button" data-action="set-auto-sync" data-seconds="0" aria-pressed="true">关闭</button>
                 <button type="button" data-action="set-auto-sync" data-seconds="60" aria-pressed="false">1 分钟</button>
+                <button type="button" data-action="set-auto-sync" data-seconds="120" aria-pressed="false">2 分钟</button>
                 <button type="button" data-action="set-auto-sync" data-seconds="300" aria-pressed="false">5 分钟</button>
+                <button type="button" data-action="set-auto-sync" data-seconds="600" aria-pressed="false">10 分钟</button>
                 <button type="button" data-action="set-auto-sync" data-seconds="900" aria-pressed="false">15 分钟</button>
+                <button type="button" data-action="set-auto-sync" data-seconds="1800" aria-pressed="false">30 分钟</button>
               </div>
             </div>
             <div class="setting-row">
@@ -196,6 +199,16 @@
                 <span>开启后随系统登录自动启动 LLM Usage（Windows 注册表 / macOS LaunchAgent）</span>
               </div>
               <button type="button" id="autostart-toggle" class="setting-switch" role="switch" aria-checked="false" aria-label="开机自启动" title="开机自启动：关"></button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <span class="setting-title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></svg>版本更新</span>
+                <span>检查 GitHub 上的最新发布版本并在线升级（Windows 静默安装）</span>
+              </div>
+              <div class="update-controls">
+                <span class="update-status" id="update-status" aria-live="polite"></span>
+                <button type="button" id="check-update-button" class="update-button" aria-label="检查更新">检查更新</button>
+              </div>
             </div>
           </div>
 

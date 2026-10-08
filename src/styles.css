@@ -490,6 +490,11 @@ progress::-webkit-progress-value { background: linear-gradient(90deg, var(--acce
 .setting-switch[aria-checked="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--surface-raised)); }
 .setting-switch[aria-checked="true"]::after { transform: translateX(16px); background: var(--accent); }
 .setting-switch:disabled { opacity: .45; cursor: not-allowed; }
+.update-controls { flex: none; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.update-status { color: var(--muted); font-size: 12.5px; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-button { flex: none; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-raised); color: var(--text); font-size: 12.5px; cursor: pointer; transition: border-color .15s ease; }
+.update-button:hover { border-color: var(--accent); }
+.update-button:disabled { opacity: .45; cursor: not-allowed; }
 
 dialog {
   width: min(460px, calc(100% - 24px));

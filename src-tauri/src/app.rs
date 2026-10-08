@@ -185,6 +185,20 @@ impl CommandError {
             message: "Qwen 同步失败：请使用百炼高级监控的 Prometheus 公网地址与 AccessKey；Coding Plan Key 不支持自动查询",
         }
     }
+
+    pub(crate) fn update_check_failed() -> Self {
+        Self {
+            code: "UPDATE_CHECK_FAILED",
+            message: "检查更新失败：无法访问 GitHub，请检查网络或系统代理设置",
+        }
+    }
+
+    pub(crate) fn update_download_failed() -> Self {
+        Self {
+            code: "UPDATE_DOWNLOAD_FAILED",
+            message: "更新下载失败，请稍后重试",
+        }
+    }
 }
 
 /// Maps GLM monitor failures onto user-facing errors. A missing Coding Plan
@@ -240,7 +254,7 @@ fn daily_usage_history(app: &tauri::AppHandle) -> Result<DailyUsageHistory, Comm
 /// auto-sync records the same rows the windowed frontend sync would.
 pub(crate) struct LocalDayWindow {
     pub date_key: String,
-    pub quarter_slot: i16,
+    pub minute_of_day: i16,
     pub beijing_start: String,
     pub beijing_end: String,
     pub local_start_ms: i64,
@@ -253,7 +267,7 @@ pub(crate) fn current_day_window(now_utc: DateTime<Utc>) -> Option<LocalDayWindo
     let (beijing_start, beijing_end) = beijing_day_range(now_utc);
     Some(LocalDayWindow {
         date_key: local_date_key(local_now.naive_local()),
-        quarter_slot: local_quarter_slot(local_now.naive_local()),
+        minute_of_day: local_minute_of_day(local_now.naive_local()),
         beijing_start,
         beijing_end,
         local_start_ms,
@@ -266,9 +280,11 @@ fn local_date_key(local: NaiveDateTime) -> String {
     local.format("%Y-%m-%d").to_string()
 }
 
-/// Local-day 15-minute slot index 0..=95 (frontend `localQuarterSlot`).
-fn local_quarter_slot(local: NaiveDateTime) -> i16 {
-    ((local.hour() * 60 + local.minute()) / 15) as i16
+/// Minutes since local midnight 0..=1439 (frontend `localMinuteOfDay`). The
+/// intraday history samples key on this, so a 1-minute sync cadence records
+/// one point per minute.
+fn local_minute_of_day(local: NaiveDateTime) -> i16 {
+    (local.hour() * 60 + local.minute()) as i16
 }
 
 /// Beijing calendar-day `00:00:00`~`23:59:59` window strings (frontend
@@ -448,7 +464,7 @@ pub async fn configure_glm(
     provider_id: String,
     api_key: String,
     local_date: String,
-    slot: Option<i16>,
+    minute_of_day: Option<i16>,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
@@ -477,7 +493,8 @@ pub async fn configure_glm(
         &app,
         DailyUsageRecord {
             date: local_date,
-            slot,
+            slot: None,
+            minute: minute_of_day,
             provider_id: instance_id,
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
@@ -493,12 +510,12 @@ pub async fn sync_glm(
     app: tauri::AppHandle,
     provider_id: String,
     local_date: String,
-    slot: Option<i16>,
+    minute_of_day: Option<i16>,
     start_time: String,
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
     let instance_id = glm_instance(&provider_id)?;
-    sync_glm_instance(&app, &instance_id, &local_date, slot, &start_time, &end_time).await
+    sync_glm_instance(&app, &instance_id, &local_date, minute_of_day, &start_time, &end_time).await
 }
 
 /// One GLM instance sync round: vault load → fetch → cache → daily history.
@@ -509,7 +526,7 @@ pub(crate) async fn sync_glm_instance(
     app: &tauri::AppHandle,
     instance_id: &str,
     local_date: &str,
-    slot: Option<i16>,
+    minute_of_day: Option<i16>,
     start_time: &str,
     end_time: &str,
 ) -> Result<GlmUsageSnapshot, CommandError> {
@@ -534,7 +551,8 @@ pub(crate) async fn sync_glm_instance(
         app,
         DailyUsageRecord {
             date: local_date.to_string(),
-            slot,
+            slot: None,
+            minute: minute_of_day,
             provider_id: instance_id.to_string(),
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
@@ -551,7 +569,7 @@ pub async fn configure_online_provider(
     provider_id: String,
     api_key: String,
     local_date: String,
-    slot: Option<i16>,
+    minute_of_day: Option<i16>,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
@@ -587,7 +605,8 @@ pub async fn configure_online_provider(
         &app,
         DailyUsageRecord {
             date: local_date,
-            slot,
+            slot: None,
+            minute: minute_of_day,
             provider_id: instance.id.clone(),
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
@@ -603,12 +622,12 @@ pub async fn sync_online_provider(
     app: tauri::AppHandle,
     provider_id: String,
     local_date: String,
-    slot: Option<i16>,
+    minute_of_day: Option<i16>,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
     let instance = online_instance(&provider_id)?;
-    sync_online_instance(&app, &instance, &local_date, slot, start_time_ms, end_time_ms).await
+    sync_online_instance(&app, &instance, &local_date, minute_of_day, start_time_ms, end_time_ms).await
 }
 
 /// One online-provider instance sync round, shared by the command above and
@@ -617,7 +636,7 @@ pub(crate) async fn sync_online_instance(
     app: &tauri::AppHandle,
     instance: &ProviderInstance,
     local_date: &str,
-    slot: Option<i16>,
+    minute_of_day: Option<i16>,
     start_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
@@ -647,7 +666,8 @@ pub(crate) async fn sync_online_instance(
         app,
         DailyUsageRecord {
             date: local_date.to_string(),
-            slot,
+            slot: None,
+            minute: minute_of_day,
             provider_id: instance.id.clone(),
             requests: snapshot.requests,
             total_tokens: snapshot.total_tokens,
@@ -821,22 +841,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_local_date_keys_and_quarter_slots() {
+    fn formats_local_date_keys_and_minute_of_day() {
         let naive = NaiveDate::from_ymd_opt(2026, 10, 8)
             .and_then(|date| date.and_hms_opt(12, 7, 0))
             .expect("valid datetime");
         assert_eq!(local_date_key(naive), "2026-10-08");
-        assert_eq!(local_quarter_slot(naive), 48);
+        assert_eq!(local_minute_of_day(naive), 727);
 
-        // Slot boundaries mirror the frontend: 00:00 → 0, 23:45 → 95.
+        // Minute-of-day boundaries mirror the frontend: 00:00 → 0, 23:59 → 1439.
         let midnight = NaiveDate::from_ymd_opt(2026, 1, 1)
             .and_then(|date| date.and_hms_opt(0, 0, 0))
             .expect("valid datetime");
-        assert_eq!(local_quarter_slot(midnight), 0);
+        assert_eq!(local_minute_of_day(midnight), 0);
         let late = NaiveDate::from_ymd_opt(2026, 1, 1)
             .and_then(|date| date.and_hms_opt(23, 59, 59))
             .expect("valid datetime");
-        assert_eq!(local_quarter_slot(late), 95);
+        assert_eq!(local_minute_of_day(late), 1439);
     }
 
     #[test]
@@ -878,7 +898,7 @@ mod tests {
         let now = Utc::now();
         let window = current_day_window(now).expect("window for a live clock");
         assert_eq!(window.date_key.len(), 10);
-        assert!(window.quarter_slot >= 0 && window.quarter_slot <= 95);
+        assert!(window.minute_of_day >= 0 && window.minute_of_day <= 1439);
         assert!(window.beijing_start.ends_with("00:00:00"));
         assert!(window.beijing_end.ends_with("23:59:59"));
         let now_ms = now.timestamp_millis();

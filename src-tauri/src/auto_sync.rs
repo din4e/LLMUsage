@@ -107,7 +107,7 @@ async fn sync_instance(
             app,
             instance_id,
             &window.date_key,
-            Some(window.quarter_slot),
+            Some(window.minute_of_day),
             &window.beijing_start,
             &window.beijing_end,
         )
@@ -120,7 +120,7 @@ async fn sync_instance(
             app,
             &instance,
             &window.date_key,
-            Some(window.quarter_slot),
+            Some(window.minute_of_day),
             window.local_start_ms,
             window.local_end_ms,
         )

@@ -4,6 +4,7 @@ mod app;
 mod auto_sync;
 mod single_instance;
 mod tray;
+mod update;
 
 fn main() {
     let _startup_guard = match single_instance::acquire_startup_guard() {
@@ -55,7 +56,9 @@ fn main() {
             app::load_daily_usage,
             app::export_provider_backup,
             app::import_provider_backup,
-            auto_sync::set_auto_sync_interval
+            auto_sync::set_auto_sync_interval,
+            update::check_for_update,
+            update::download_and_install_update
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LLM Usage");

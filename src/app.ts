@@ -11,12 +11,12 @@ import {
   formatCooldown,
   formatInteger,
   formatProviderChangeValue,
-  formatQuarterSlot,
+  formatMinuteOfDay,
+  localMinuteOfDay,
   instanceIndexOf,
   isProviderInstanceId,
   localDateKey,
   localDayRangeMs,
-  localQuarterSlot,
   selectBalanceTrend,
   selectDailyTrend,
   selectLatestProviderChange,
@@ -96,11 +96,22 @@ interface AutoSyncRoundResult {
   failed: { instanceId: string; message: string }[];
 }
 
+/** Release check returned by the Rust-side updater. */
+interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  downloadUrl?: string | null;
+  downloadSize?: number | null;
+}
+
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const refreshButton = byId<HTMLButtonElement>("refresh-button");
 const syncStatus = byId<HTMLElement>("sync-status");
 const themeButton = byId<HTMLButtonElement>("theme-toggle");
 const autostartToggle = byId<HTMLButtonElement>("autostart-toggle");
+const checkUpdateButton = byId<HTMLButtonElement>("check-update-button");
+const updateStatus = byId<HTMLElement>("update-status");
 const autoSyncOptions = byId<HTMLElement>("auto-sync-options");
 const dialog = byId<HTMLDialogElement>("provider-dialog");
 const providerForm = byId<HTMLFormElement>("provider-form");
@@ -241,9 +252,9 @@ function renderRecentChangeProviderOptions() {
   if (options.some((option) => option.value === selected)) recentChangeProvider.value = selected;
 }
 
-function recentSampleLabel(date: string, slot: number | null): string {
+function recentSampleLabel(date: string, minute: number | null): string {
   const dateLabel = date.slice(5).replace("-", "/");
-  return slot == null ? dateLabel : `${dateLabel} ${formatQuarterSlot(slot)}`;
+  return minute == null ? dateLabel : `${dateLabel} ${formatMinuteOfDay(minute)}`;
 }
 
 function renderRecentChange() {
@@ -316,7 +327,7 @@ function renderRecentChange() {
     );
   }
   if (recentChangePeriod) {
-    recentChangePeriod.textContent = `${recentSampleLabel(change.previousDate, change.previousSlot)} → ${recentSampleLabel(change.currentDate, change.currentSlot)}`;
+    recentChangePeriod.textContent = `${recentSampleLabel(change.previousDate, change.previousMinute)} → ${recentSampleLabel(change.currentDate, change.currentMinute)}`;
   }
 }
 
@@ -963,7 +974,7 @@ async function syncGlm(instanceId: string): Promise<boolean> {
     renderGlm(instanceId, await invoke<GlmSnapshot>("sync_glm", {
       providerId: instanceId,
       localDate: localDateKey(),
-      slot: localQuarterSlot(),
+      minuteOfDay: localMinuteOfDay(),
       ...beijingDayRange(),
     }));
     clearSyncFailed(instanceId);
@@ -985,7 +996,7 @@ async function syncOnline(instanceId: string): Promise<boolean> {
     renderOnline(await invoke<OnlineSnapshot>("sync_online_provider", {
       providerId: instanceId,
       localDate: localDateKey(),
-      slot: localQuarterSlot(),
+      minuteOfDay: localMinuteOfDay(),
       ...localDayRangeMs(),
     }));
     clearSyncFailed(instanceId);
@@ -1306,6 +1317,35 @@ autostartToggle?.addEventListener("click", async () => {
   }
 });
 
+/** Checks GitHub for a newer release; on success the download hands off to
+ * the native installer (silent upgrade + relaunch), so the promise never
+ * resolves on the happy path — the app exits from Rust. */
+checkUpdateButton?.addEventListener("click", async () => {
+  if (!isTauri() || checkUpdateButton.disabled) return;
+  checkUpdateButton.disabled = true;
+  if (updateStatus) updateStatus.textContent = "正在检查更新…";
+  try {
+    const result = await invoke<UpdateCheckResult>("check_for_update");
+    if (!result.updateAvailable || !result.downloadUrl) {
+      if (updateStatus) updateStatus.textContent = `已是最新版本（v${result.latestVersion}）`;
+      return;
+    }
+    if (updateStatus) updateStatus.textContent = `发现新版本 v${result.latestVersion}，正在下载…`;
+    await invoke("download_and_install_update", {
+      url: result.downloadUrl,
+      expectedSize: result.downloadSize ?? 0,
+    });
+    // Download succeeded and the installer was launched; the process exits
+    // in Rust. Reaching this line means the hand-off failed silently.
+    if (updateStatus) updateStatus.textContent = "更新已就绪，等待安装…";
+  } catch (reason) {
+    const error = reason as CommandError;
+    if (updateStatus) updateStatus.textContent = error.message ?? "检查更新失败";
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+});
+
 document.addEventListener("click", (event) => {
   const target = event.target as Element | null;
   const button = target?.closest<HTMLButtonElement>("button[data-action]");
@@ -1494,7 +1534,7 @@ providerForm?.addEventListener("submit", async (event) => {
         providerId: selectedInstance,
         apiKey: credential,
         localDate: localDateKey(),
-        slot: localQuarterSlot(),
+        minuteOfDay: localMinuteOfDay(),
         ...beijingDayRange(),
       });
       renderGlm(selectedInstance, snapshot);
@@ -1503,7 +1543,7 @@ providerForm?.addEventListener("submit", async (event) => {
         providerId: selectedInstance,
         apiKey: credential,
         localDate: localDateKey(),
-        slot: localQuarterSlot(),
+        minuteOfDay: localMinuteOfDay(),
         ...localDayRangeMs(),
       });
       renderOnline(snapshot);
@@ -1670,6 +1710,11 @@ void initAutostartToggle();
 if (isTauri()) void listen("tray-sync", () => void syncAll());
 if (isTauri()) {
   void listen<AutoSyncRoundResult>("auto-sync-completed", (event) => onBackgroundSyncRound(event.payload));
+  void listen<{ downloaded: number; total: number }>("update-progress", (event) => {
+    const { downloaded, total } = event.payload;
+    const percent = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+    if (updateStatus) updateStatus.textContent = `正在下载更新… ${percent}%`;
+  });
 }
 // A suspended WebView queues round events while hidden; refresh once on show
 // so the dashboard catches up with everything the background task recorded.
