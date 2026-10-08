@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod auto_sync;
 mod single_instance;
 mod tray;
 
@@ -12,6 +13,8 @@ fn main() {
             return;
         }
     };
+
+    use tauri::Manager as _;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -28,6 +31,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             tray::setup(app.handle())?;
+            // Rust-side auto-sync cadence; the frontend calls
+            // set_auto_sync_interval on boot and whenever the rail setting
+            // changes, so hidden WebView timers no longer gate data refresh.
+            app.manage(auto_sync::AutoSyncState::default());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -47,7 +54,8 @@ fn main() {
             app::load_cached_snapshots,
             app::load_daily_usage,
             app::export_provider_backup,
-            app::import_provider_backup
+            app::import_provider_backup,
+            auto_sync::set_auto_sync_interval
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LLM Usage");

@@ -10,6 +10,7 @@ use llm_usage_core::secret::{SecretError, SecretVault};
 use llm_usage_core::transfer::{
     ExportSummary, ImportEntryResult, TransferFileError, TransferMode, TransferPayload,
 };
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
 use tauri::Manager;
 use zeroize::Zeroize;
@@ -22,6 +23,11 @@ pub struct CommandError {
 }
 
 impl CommandError {
+    /// Static user-facing text, read by the auto-sync round report.
+    pub(crate) fn message(&self) -> &'static str {
+        self.message
+    }
+
     fn credential() -> Self {
         // Same code across platforms; the message points the user at the
         // correct credential store instead of always mentioning Windows.
@@ -108,7 +114,7 @@ impl CommandError {
         }
     }
 
-    fn invalid_provider() -> Self {
+    pub(crate) fn invalid_provider() -> Self {
         Self {
             code: "INVALID_PROVIDER",
             message: "暂不支持该供应商",
@@ -225,6 +231,68 @@ fn daily_usage_history(app: &tauri::AppHandle) -> Result<DailyUsageHistory, Comm
         .app_data_dir()
         .map_err(|_| CommandError::credential())?;
     Ok(DailyUsageHistory::new(&app_data))
+}
+
+/// Every timestamp the sync pipeline needs for "now": the local-day date key
+/// and 15-minute slot for history records, the Beijing calendar-day window the
+/// GLM monitor expects, and the local-day millisecond range for online
+/// providers. Ported from the frontend `domain.ts` helpers so the Rust-side
+/// auto-sync records the same rows the windowed frontend sync would.
+pub(crate) struct LocalDayWindow {
+    pub date_key: String,
+    pub quarter_slot: i16,
+    pub beijing_start: String,
+    pub beijing_end: String,
+    pub local_start_ms: i64,
+    pub local_end_ms: i64,
+}
+
+pub(crate) fn current_day_window(now_utc: DateTime<Utc>) -> Option<LocalDayWindow> {
+    let local_now = now_utc.with_timezone(&Local);
+    let (local_start_ms, local_end_ms) = local_day_range_ms(local_now.date_naive())?;
+    let (beijing_start, beijing_end) = beijing_day_range(now_utc);
+    Some(LocalDayWindow {
+        date_key: local_date_key(local_now.naive_local()),
+        quarter_slot: local_quarter_slot(local_now.naive_local()),
+        beijing_start,
+        beijing_end,
+        local_start_ms,
+        local_end_ms,
+    })
+}
+
+/// Local-day date key `YYYY-MM-DD` (frontend `localDateKey`).
+fn local_date_key(local: NaiveDateTime) -> String {
+    local.format("%Y-%m-%d").to_string()
+}
+
+/// Local-day 15-minute slot index 0..=95 (frontend `localQuarterSlot`).
+fn local_quarter_slot(local: NaiveDateTime) -> i16 {
+    ((local.hour() * 60 + local.minute()) / 15) as i16
+}
+
+/// Beijing calendar-day `00:00:00`~`23:59:59` window strings (frontend
+/// `beijingDayRange`): the GLM monitor buckets usage by UTC+8 day, not by the
+/// machine's zone.
+fn beijing_day_range(now_utc: DateTime<Utc>) -> (String, String) {
+    let offset = FixedOffset::east_opt(8 * 3600).expect("UTC+8 is always a valid offset");
+    let beijing = now_utc.with_timezone(&offset);
+    let day = beijing.date_naive();
+    (format!("{day} 00:00:00"), format!("{day} 23:59:59"))
+}
+
+/// Local-day `[midnight, next midnight)` in epoch milliseconds (frontend
+/// `localDayRangeMs`). `None` only on a DST-gap midnight, which does not
+/// exist in UTC+8; the caller treats it as a skipped round.
+fn local_day_range_ms(today: NaiveDate) -> Option<(i64, i64)> {
+    let next_day = today + chrono::Duration::days(1);
+    let start = today
+        .and_hms_opt(0, 0, 0)
+        .and_then(|midnight| Local.from_local_datetime(&midnight).single())?;
+    let end = next_day
+        .and_hms_opt(0, 0, 0)
+        .and_then(|midnight| Local.from_local_datetime(&midnight).single())?;
+    Some((start.timestamp_millis(), end.timestamp_millis()))
 }
 
 /// Persists the day's usage sample. Deliberately decoupled from the credential
@@ -430,7 +498,22 @@ pub async fn sync_glm(
     end_time: String,
 ) -> Result<GlmUsageSnapshot, CommandError> {
     let instance_id = glm_instance(&provider_id)?;
-    let mut api_key = glm_vault(&app, &instance_id)?.load().map_err(|error| match error {
+    sync_glm_instance(&app, &instance_id, &local_date, slot, &start_time, &end_time).await
+}
+
+/// One GLM instance sync round: vault load → fetch → cache → daily history.
+/// Shared by the `sync_glm` command and the Rust-side auto-sync task so the
+/// dashboard keeps recording usage while the window (and its WebView timers)
+/// is hidden to the tray.
+pub(crate) async fn sync_glm_instance(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    local_date: &str,
+    slot: Option<i16>,
+    start_time: &str,
+    end_time: &str,
+) -> Result<GlmUsageSnapshot, CommandError> {
+    let mut api_key = glm_vault(app, instance_id)?.load().map_err(|error| match error {
         SecretError::Missing => CommandError::not_configured(),
         _ => CommandError::credential(),
     })?;
@@ -443,16 +526,16 @@ pub async fn sync_glm(
     };
     api_key.zeroize();
     let snapshot = client
-        .fetch_snapshot(&start_time, &end_time)
+        .fetch_snapshot(start_time, end_time)
         .await
         .map_err(glm_error)?;
-    cache_snapshot(&app, &instance_id, "glm", &snapshot)?;
+    cache_snapshot(app, instance_id, "glm", &snapshot)?;
     record_daily_usage(
-        &app,
+        app,
         DailyUsageRecord {
-            date: local_date,
+            date: local_date.to_string(),
             slot,
-            provider_id: instance_id,
+            provider_id: instance_id.to_string(),
             requests: Some(snapshot.requests),
             total_tokens: Some(snapshot.total_tokens),
             estimated_cost_cny: None,
@@ -525,9 +608,22 @@ pub async fn sync_online_provider(
     end_time_ms: i64,
 ) -> Result<OnlineSnapshot, CommandError> {
     let instance = online_instance(&provider_id)?;
+    sync_online_instance(&app, &instance, &local_date, slot, start_time_ms, end_time_ms).await
+}
+
+/// One online-provider instance sync round, shared by the command above and
+/// the Rust-side auto-sync task (see `sync_glm_instance` for the rationale).
+pub(crate) async fn sync_online_instance(
+    app: &tauri::AppHandle,
+    instance: &ProviderInstance,
+    local_date: &str,
+    slot: Option<i16>,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<OnlineSnapshot, CommandError> {
     let range = OnlineUsageRange::new(start_time_ms, end_time_ms)
         .map_err(|_| CommandError::invalid_time_range())?;
-    let mut api_key = provider_vault(&app, &instance.id)?
+    let mut api_key = provider_vault(app, &instance.id)?
         .load()
         .map_err(|error| match error {
             SecretError::Missing => CommandError::not_configured(),
@@ -545,12 +641,12 @@ pub async fn sync_online_provider(
         .fetch_snapshot_for_range(range)
         .await
         .map_err(|error| online_error(instance.provider, error))?;
-    apply_instance_identity(&mut snapshot, &instance);
-    cache_snapshot(&app, &instance.id, "online", &snapshot)?;
+    apply_instance_identity(&mut snapshot, instance);
+    cache_snapshot(app, &instance.id, "online", &snapshot)?;
     record_daily_usage(
-        &app,
+        app,
         DailyUsageRecord {
-            date: local_date,
+            date: local_date.to_string(),
             slot,
             provider_id: instance.id.clone(),
             requests: snapshot.requests,
@@ -723,6 +819,71 @@ pub fn import_provider_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_local_date_keys_and_quarter_slots() {
+        let naive = NaiveDate::from_ymd_opt(2026, 10, 8)
+            .and_then(|date| date.and_hms_opt(12, 7, 0))
+            .expect("valid datetime");
+        assert_eq!(local_date_key(naive), "2026-10-08");
+        assert_eq!(local_quarter_slot(naive), 48);
+
+        // Slot boundaries mirror the frontend: 00:00 → 0, 23:45 → 95.
+        let midnight = NaiveDate::from_ymd_opt(2026, 1, 1)
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .expect("valid datetime");
+        assert_eq!(local_quarter_slot(midnight), 0);
+        let late = NaiveDate::from_ymd_opt(2026, 1, 1)
+            .and_then(|date| date.and_hms_opt(23, 59, 59))
+            .expect("valid datetime");
+        assert_eq!(local_quarter_slot(late), 95);
+    }
+
+    #[test]
+    fn buckets_glm_windows_by_beijing_calendar_day() {
+        // 16:30 UTC is already the next calendar day in UTC+8 (00:30).
+        let now = Utc
+            .with_ymd_and_hms(2026, 10, 8, 16, 30, 0)
+            .single()
+            .expect("valid utc datetime");
+        let (start, end) = beijing_day_range(now);
+        assert_eq!(start, "2026-10-09 00:00:00");
+        assert_eq!(end, "2026-10-09 23:59:59");
+
+        let earlier = Utc
+            .with_ymd_and_hms(2026, 10, 8, 15, 59, 0)
+            .single()
+            .expect("valid utc datetime");
+        let (start, end) = beijing_day_range(earlier);
+        assert_eq!(start, "2026-10-08 00:00:00");
+        assert_eq!(end, "2026-10-08 23:59:59");
+    }
+
+    #[test]
+    fn spans_exactly_one_local_day() {
+        let today = Local::now().date_naive();
+        let Some((start_ms, end_ms)) = local_day_range_ms(today) else {
+            panic!("local midnight must resolve outside DST gaps");
+        };
+        assert_eq!(end_ms - start_ms, 86_400_000);
+        let start_local = Local
+            .timestamp_millis_opt(start_ms)
+            .single()
+            .expect("roundtrip timestamp");
+        assert_eq!((start_local.hour(), start_local.minute(), start_local.second()), (0, 0, 0));
+    }
+
+    #[test]
+    fn builds_a_window_that_contains_the_current_moment() {
+        let now = Utc::now();
+        let window = current_day_window(now).expect("window for a live clock");
+        assert_eq!(window.date_key.len(), 10);
+        assert!(window.quarter_slot >= 0 && window.quarter_slot <= 95);
+        assert!(window.beijing_start.ends_with("00:00:00"));
+        assert!(window.beijing_end.ends_with("23:59:59"));
+        let now_ms = now.timestamp_millis();
+        assert!(now_ms >= window.local_start_ms && now_ms < window.local_end_ms);
+    }
 
     #[test]
     fn explains_when_the_glm_account_has_no_coding_plan() {

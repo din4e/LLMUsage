@@ -90,6 +90,12 @@ interface CachedSnapshot {
   snapshot: unknown;
 }
 
+/** Round report emitted by the Rust-side auto-sync task. */
+interface AutoSyncRoundResult {
+  synced: string[];
+  failed: { instanceId: string; message: string }[];
+}
+
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const refreshButton = byId<HTMLButtonElement>("refresh-button");
 const syncStatus = byId<HTMLElement>("sync-status");
@@ -159,13 +165,12 @@ const THEME_LIGHT_KEY = "llm-usage:theme-light";
 const instanceRemarks = loadSavedInstanceRemarks();
 const savedInstanceOrder = loadSavedInstanceOrder();
 let dragSourceRow: HTMLElement | null = null;
-let autoSyncTimer: number | null = null;
 let isSyncing = false;
 let dailyUsageRecords: DailyUsageRecord[] = [];
 let selectedTrendRange: TrendRange = "7d";
 let selectedTrendMetric: "tokens" | "balance" = "tokens";
 let selectedRecentChangeMetric: ProviderChangeMetric = "tokens";
-const APP_VERSION_FALLBACK = "0.1.8";
+const APP_VERSION_FALLBACK = "0.1.9";
 
 function renderTrendProviderOptions() {
   if (!trendProvider) return;
@@ -1167,19 +1172,41 @@ async function loadCache() {
   }
 }
 
+/**
+ * Hands the cadence to the Rust-side scheduler. A WebView `setInterval` gets
+ * throttled/suspended while the window is hidden to the tray (WebView2
+ * background-timer throttling), which silently stalled auto-sync and left
+ * gaps in the usage history; the native task keeps recording regardless of
+ * window visibility and reports each round via `auto-sync-completed`.
+ */
 function applyAutoSync(seconds: number) {
-  if (autoSyncTimer !== null) {
-    window.clearInterval(autoSyncTimer);
-    autoSyncTimer = null;
-  }
-  // NaN passes a `seconds <= 0` check but setInterval treats it as 0 ms and
-  // hammers the sync endpoints; treat it as "off".
+  // NaN passes a `seconds <= 0` check but the native side floors it anyway;
+  // treat it as "off" so the status label never shows a bogus cadence.
   if (!Number.isFinite(seconds) || seconds <= 0) {
+    if (isTauri()) void invoke("set_auto_sync_interval", { seconds: 0 });
     setStatus("自动拉取已关闭");
     return;
   }
-  autoSyncTimer = window.setInterval(() => void syncAll(), seconds * 1000);
+  if (isTauri()) void invoke("set_auto_sync_interval", { seconds });
   setStatus(`自动拉取：${seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`}`);
+}
+
+/** Re-renders the dashboard from cache/history the Rust side already wrote. */
+async function refreshFromCache() {
+  await loadCache();
+  await loadDailyUsage();
+  renderTotals();
+}
+
+/** Background round finished: refresh cached rows and flag failed instances. */
+function onBackgroundSyncRound(result: AutoSyncRoundResult) {
+  for (const instanceId of result.synced) clearSyncFailed(instanceId);
+  for (const failure of result.failed) markSyncFailed(failure.instanceId, failure.message);
+  // Same narration rule as the windowed sync path: the last failure wins.
+  for (const failure of result.failed) {
+    setStatus(instanceError(failure.instanceId, failure.message, { message: failure.message }), "error");
+  }
+  void refreshFromCache();
 }
 
 function autoSyncLabel(seconds: number): string {
@@ -1641,6 +1668,14 @@ for (const eventType of ["pointerdown", "pointerup", "pointercancel"] as const) 
 void initializeWindowControls();
 void initAutostartToggle();
 if (isTauri()) void listen("tray-sync", () => void syncAll());
+if (isTauri()) {
+  void listen<AutoSyncRoundResult>("auto-sync-completed", (event) => onBackgroundSyncRound(event.payload));
+}
+// A suspended WebView queues round events while hidden; refresh once on show
+// so the dashboard catches up with everything the background task recorded.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void refreshFromCache();
+});
 window.addEventListener("hashchange", applyRoute);
 applyRoute();
 void populateAboutMetadata();
