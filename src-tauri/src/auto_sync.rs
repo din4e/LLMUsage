@@ -1,8 +1,7 @@
 use std::{sync::Mutex, time::Duration};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
-use tokio::task::JoinHandle;
+use tauri::{async_runtime, AppHandle, Emitter, Manager};
 
 use crate::app::{self, CommandError};
 
@@ -15,7 +14,7 @@ const MIN_INTERVAL_SECONDS: i64 = 30;
 /// task (a round cut mid-flight is safe: caches and history use atomic writes
 /// and a serialized upsert).
 #[derive(Default)]
-pub struct AutoSyncState(Mutex<Option<JoinHandle<()>>>);
+pub struct AutoSyncState(Mutex<Option<async_runtime::JoinHandle<()>>>);
 
 /// Per-instance outcome of one background round, forwarded to the frontend so
 /// the dashboard can refresh rows and flag failures without doing the sync.
@@ -53,9 +52,12 @@ pub fn set_auto_sync_interval(app: AppHandle, seconds: i64) {
     }
 }
 
-fn spawn_rounds(app: AppHandle, seconds: i64) -> JoinHandle<()> {
+fn spawn_rounds(app: AppHandle, seconds: i64) -> async_runtime::JoinHandle<()> {
     let interval = Duration::from_secs(seconds as u64);
-    tokio::spawn(async move {
+    // tauri::async_runtime (not a bare tokio::spawn): this command is a plain
+    // sync fn, which Tauri runs outside the async runtime — tokio::spawn would
+    // panic with "no reactor running" on the first interval change.
+    async_runtime::spawn(async move {
         // Sleep-first: the frontend runs its own opening sync round on boot,
         // so the background cadence only starts ticking after one interval.
         loop {
