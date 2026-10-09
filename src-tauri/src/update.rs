@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use crate::app::CommandError;
 
