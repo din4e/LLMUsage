@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Usage 技术架构</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      /* Project light-theme tokens (src/styles.css :root[data-light]) */
+      --color-paper:   #e8f0ec;   /* canvas */
+      --color-ink:     #10251f;   /* text */
+      --color-muted:   #536b62;   /* muted */
+      --color-accent:  #087b5d;   /* accent (README badge green) */
+      --color-link:    #006ea6;   /* signal blue */
+      --font-sans:     'Geist', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif SC', 'Noto Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    /* The SVG holds its readable width (min-width == the viewBox width, so the
+       type ramp is never silently scaled down). This wrapper lets a narrow
+       screen scroll the diagram instead of the whole page. */
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 960px; display: block; }
+    /* Paper has no scrollbar, so the local scroller would clip instead of
+       scroll. Let the diagram scale down to the sheet: smaller but whole
+       beats sharp but cut off. Must come after the svg rule above - a media
+       query adds no specificity, so a later plain rule would win. */
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · Local-first</p>
+    <h1>LLM Usage 技术架构</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc">
+        <title id="architecture-title">LLM Usage 技术架构</title>
+        <desc id="architecture-desc">LLM Usage 桌面应用架构：WebView 界面触发 Rust 核心经 HTTPS 拉取供应商官方接口，凭据由 Windows DPAPI 加密，快照与每日汇总仅保存在本机，再经 Tauri IPC 回到界面。</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#536b62"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#087b5d"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#006ea6"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#e8f0ec"/>
+
+        <!-- 1. Trust boundary zone: everything on the local machine -->
+        <rect x="292" y="76" width="628" height="372" rx="8"
+              fill="rgba(16,37,31,0.02)" stroke="rgba(16,37,31,0.30)" stroke-width="0.8" stroke-dasharray="5,4"/>
+        <rect x="316" y="68" width="168" height="16" rx="2" fill="#e8f0ec"/>
+        <text x="400" y="80" fill="#536b62" font-size="12" font-weight="500"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">本机边界 · 数据不出本机</text>
+
+        <!-- 2. Arrows (drawn before nodes) -->
+
+        <!-- Provider -> Core: HTTPS (external call) -->
+        <line x1="184" y1="260" x2="300" y2="260" stroke="#006ea6" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <rect x="228" y="240" width="40" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="248" y="249" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">HTTPS</text>
+
+        <!-- Vault -> Core: READ (orthogonal elbow into the core's top edge) -->
+        <path d="M 560,136 H 392 Q 384,136 384,144 V 216" fill="none" stroke="#536b62" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="390" y="176" width="36" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="408" y="185" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">READ</text>
+
+        <!-- Core -> Snapshot: WRITE -->
+        <line x1="460" y1="248" x2="552" y2="248" stroke="#536b62" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="490" y="228" width="40" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="510" y="237" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">WRITE</text>
+
+        <!-- Core -> Daily history: WRITE (elbow down) -->
+        <path d="M 460,272 H 508 Q 516,272 516,280 V 372 Q 516,380 524,380 H 552" fill="none" stroke="#536b62" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="522" y="316" width="40" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="542" y="325" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">WRITE</text>
+
+        <!-- Snapshot -> UI: IPC -->
+        <line x1="736" y1="248" x2="784" y2="248" stroke="#536b62" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="742" y="228" width="34" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="759" y="237" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">IPC</text>
+
+        <!-- Daily history -> UI: IPC (elbow up) -->
+        <path d="M 736,380 H 752 Q 760,380 760,372 V 272 Q 760,264 768,264 H 784" fill="none" stroke="#536b62" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="716" y="308" width="34" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="733" y="317" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">IPC</text>
+
+        <!-- UI -> Core: SYNC (accent control loop, stays inside the boundary) -->
+        <path d="M 848,296 V 424 Q 848,432 840,432 H 392 Q 384,432 384,424 V 304" fill="none" stroke="#087b5d" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="482" y="410" width="40" height="12" rx="2" fill="#e8f0ec"/>
+        <text x="502" y="419" fill="#087b5d" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">SYNC</text>
+
+        <!-- 3. Nodes -->
+
+        <!-- Provider APIs (external, outside the boundary) -->
+        <rect x="60" y="224" width="124" height="72" rx="6" fill="#e8f0ec"/>
+        <rect x="60" y="224" width="124" height="72" rx="6" fill="rgba(16,37,31,0.03)" stroke="rgba(16,37,31,0.30)" stroke-width="1"/>
+        <rect x="68" y="230" width="30" height="12" rx="2" fill="transparent" stroke="rgba(16,37,31,0.40)" stroke-width="0.8"/>
+        <text x="83" y="239" fill="rgba(16,37,31,0.80)" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.08em">API</text>
+        <text x="122" y="266" fill="#10251f" font-size="12" font-weight="600"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">供应商官方接口</text>
+        <text x="122" y="282" fill="#536b62" font-size="9" font-family="'Geist Mono', monospace"
+              text-anchor="middle">15+ provider apis</text>
+
+        <!-- Rust core (focal) -->
+        <rect x="308" y="224" width="152" height="72" rx="6" fill="#e8f0ec"/>
+        <rect x="308" y="224" width="152" height="72" rx="6" fill="rgba(8,123,93,0.08)" stroke="#087b5d" stroke-width="1.2"/>
+        <rect x="316" y="230" width="32" height="12" rx="2" fill="transparent" stroke="rgba(8,123,93,0.50)" stroke-width="0.8"/>
+        <text x="332" y="239" fill="rgba(8,123,93,0.90)" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.08em">CORE</text>
+        <text x="384" y="266" fill="#10251f" font-size="12" font-weight="600"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">Rust 核心</text>
+        <text x="384" y="282" fill="#536b62" font-size="9" font-family="'Geist Mono', monospace"
+              text-anchor="middle">reqwest · rustls</text>
+
+        <!-- DPAPI credential vault (store) -->
+        <rect x="560" y="100" width="176" height="72" rx="6" fill="#e8f0ec"/>
+        <rect x="560" y="100" width="176" height="72" rx="6" fill="rgba(16,37,31,0.05)" stroke="#536b62" stroke-width="1"/>
+        <rect x="568" y="106" width="38" height="12" rx="2" fill="transparent" stroke="rgba(83,107,98,0.50)" stroke-width="0.8"/>
+        <text x="587" y="115" fill="rgba(83,107,98,0.90)" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.08em">VAULT</text>
+        <text x="648" y="142" fill="#10251f" font-size="12" font-weight="600"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">DPAPI 凭据库</text>
+        <text x="648" y="158" fill="#536b62" font-size="9" font-family="'Geist Mono', monospace"
+              text-anchor="middle">windows dpapi</text>
+
+        <!-- Latest snapshot (store) -->
+        <rect x="560" y="224" width="176" height="72" rx="6" fill="#e8f0ec"/>
+        <rect x="560" y="224" width="176" height="72" rx="6" fill="rgba(16,37,31,0.05)" stroke="#536b62" stroke-width="1"/>
+        <rect x="568" y="230" width="40" height="12" rx="2" fill="transparent" stroke="rgba(83,107,98,0.50)" stroke-width="0.8"/>
+        <text x="588" y="239" fill="rgba(83,107,98,0.90)" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.08em">CACHE</text>
+        <text x="648" y="266" fill="#10251f" font-size="12" font-weight="600"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">最新快照</text>
+        <text x="648" y="282" fill="#536b62" font-size="9" font-family="'Geist Mono', monospace"
+              text-anchor="middle">snapshot.json</text>
+
+        <!-- Daily usage history (store) -->
+        <rect x="560" y="348" width="176" height="72" rx="6" fill="#e8f0ec"/>
+        <rect x="560" y="348" width="176" height="72" rx="6" fill="rgba(16,37,31,0.05)" stroke="#536b62" stroke-width="1"/>
+        <rect x="568" y="354" width="46" height="12" rx="2" fill="transparent" stroke="rgba(83,107,98,0.50)" stroke-width="0.8"/>
+        <text x="591" y="363" fill="rgba(83,107,98,0.90)" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.08em">HISTORY</text>
+        <text x="648" y="390" fill="#10251f" font-size="12" font-weight="600"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">每日汇总</text>
+        <text x="648" y="406" fill="#536b62" font-size="9" font-family="'Geist Mono', monospace"
+              text-anchor="middle">daily-usage.json</text>
+
+        <!-- TypeScript UI (input/user) -->
+        <rect x="792" y="224" width="112" height="72" rx="6" fill="#e8f0ec"/>
+        <rect x="792" y="224" width="112" height="72" rx="6" fill="rgba(83,107,98,0.10)" stroke="#8faf9f" stroke-width="1"/>
+        <rect x="800" y="230" width="48" height="12" rx="2" fill="transparent" stroke="rgba(143,175,159,0.60)" stroke-width="0.8"/>
+        <text x="824" y="239" fill="rgba(83,107,98,0.90)" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.08em">WEBVIEW</text>
+        <text x="848" y="266" fill="#10251f" font-size="12" font-weight="600"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+              text-anchor="middle">TypeScript UI</text>
+        <text x="848" y="282" fill="#536b62" font-size="9" font-family="'Geist Mono', monospace"
+              text-anchor="middle">ipc · svg</text>
+
+        <!-- 4. Legend strip -->
+        <line x1="40" y1="536" x2="920" y2="536" stroke="rgba(16,37,31,0.12)" stroke-width="0.8"/>
+        <text x="40" y="560" fill="#536b62" font-size="8" font-family="'Geist Mono', monospace"
+              letter-spacing="0.14em">LEGEND</text>
+
+        <rect x="120" y="550" width="14" height="14" rx="3" fill="rgba(8,123,93,0.08)" stroke="#087b5d" stroke-width="1"/>
+        <text x="142" y="562" fill="#536b62" font-size="12" font-weight="500"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif">核心组件</text>
+
+        <line x1="232" y1="557" x2="272" y2="557" stroke="#536b62" stroke-width="1" marker-end="url(#arrow)"/>
+        <text x="282" y="562" fill="#536b62" font-size="12" font-weight="500"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif">本地读写</text>
+
+        <line x1="360" y1="557" x2="400" y2="557" stroke="#006ea6" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <text x="410" y="562" fill="#536b62" font-size="12" font-weight="500"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif">HTTPS 外部调用</text>
+
+        <rect x="510" y="550" width="14" height="14" rx="3" fill="rgba(16,37,31,0.02)" stroke="rgba(16,37,31,0.30)" stroke-width="0.8" stroke-dasharray="5,4"/>
+        <text x="532" y="562" fill="#536b62" font-size="12" font-weight="500"
+              font-family="'Geist', 'PingFang SC', 'Microsoft YaHei', sans-serif">本机信任边界</text>
+
+      </svg>
+    </div>
+  </div>
+</body>
+</html>
