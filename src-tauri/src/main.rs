@@ -57,6 +57,9 @@ fn main() {
             app::export_provider_backup,
             app::import_provider_backup,
             app::open_project_repository,
+            app::begin_provider_authorization,
+            app::complete_provider_authorization,
+            app::open_authorization_url,
             auto_sync::set_auto_sync_interval,
             update::check_for_update,
             update::download_and_install_update

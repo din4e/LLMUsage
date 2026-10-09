@@ -1,6 +1,6 @@
 # Provider Capability Matrix
 
-Last verified: 2026-08-16
+Last verified: 2026-10-09
 
 This matrix is the implementation contract for online provider adapters. A provider is only marked as supporting a capability when a public, official API documents it. Console-only data is not treated as an API, and private browser endpoints or login cookies are out of scope.
 
@@ -37,15 +37,18 @@ This matrix is the implementation contract for online provider adapters. A provi
 | Z.AI / GLM Coding Plan Global | Console only | Community discussions only; no verified API-key usage endpoint | Console FAQ documents 5-hour refresh | Included in subscription | Not added; the China community endpoint is not verified for z.ai keys |
 | Gemini Code Assist | Not applicable | Official Cloud Monitoring metrics for API calls and used tokens | Published fixed quota; remaining personal quota is not returned | Not returned by monitoring metrics | Project + explicit OAuth access-token adapter; never read local Google credentials |
 | Alibaba Model Studio / Qwen China & Global | Not applicable | Official private Prometheus metrics `model_usage` and `model_call_count` | Coding Plan remaining quota remains console-only | Billing is separate from monitoring | Prometheus URL + least-privilege AccessKey adapter; Coding Plan keys are rejected |
+| OpenCode Go (opencode.ai/zen) | Not applicable | Official subscription `GET /usage` endpoint: rolling / weekly / monthly used percent with resets | Returned per window | Included in subscription | Bearer-key adapter; percent values are already used-percentages |
+| Grok 订阅 (SuperGrok) | Prepaid / on-demand dollars ride the weekly credits response | Official CLI-proxy billing: weekly credits percent + monthly limit/used (US cents) | Weekly `currentPeriod.end` and monthly `billingPeriodEnd` | Monthly spend from limit/used cents | OAuth loopback adapter (auth.x.ai PKCE); monthly $150/$1500 ceilings identify SuperGrok plans |
+| Google Antigravity | Not applicable | Official `v1internal:fetchAvailableModels` per-model `remainingFraction` | Per-model `resetTime` (RFC 3339) | Paid-tier AI credits from `loadCodeAssist` | OAuth loopback adapter (Google PKCE); utilization = `(1 − remainingFraction) × 100` |
 
 ## Official Endpoint Contracts Verified
 
-### MiniMax China Token Plan
+### MiniMax China Token Plan / Coding Plan
 
-- Primary remaining-plan endpoint: `GET https://www.minimaxi.com/v1/token_plan/remains`
-- Same-region fallback: `GET https://api.minimaxi.com/v1/token_plan/remains`
+- Primary coding-plan endpoint: `GET https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains` (international: `https://api.minimax.io/…`). Responses carry `current_subscribe_title` plus a `model_remains[]` where only the `general` entry is the coding quota (video is skipped); percent fields are REMAINING percents, and the weekly window only exists while `current_weekly_status == 1`. `end_time` / `weekly_end_time` are millisecond epochs. `base_resp.status_code != 0` is the business-error envelope.
+- Legacy Token Plan endpoints stay as fallbacks: `GET https://www.minimaxi.com/v1/token_plan/remains` and `GET https://api.minimaxi.com/v1/token_plan/remains` (same paths on minimax.io).
 - Authentication uses `Authorization: Bearer <MINIMAX_API_KEY>`.
-- The response may expose count limits, remaining percentages, or both. The current official CLI fixtures include `general` with zero count limits plus `current_*_remaining_percent`, and `video` with explicit remaining counts.
+- The legacy response may expose count limits, remaining percentages, or both. The current official CLI fixtures include `general` with zero count limits plus `current_*_remaining_percent`, and `video` with explicit remaining counts.
 - In `model_remains`, `current_interval_usage_count` and `current_weekly_usage_count` are remaining counts despite their names. The app derives used counts as `total - remaining` and never fabricates counts from a percentage-only entry.
 - Every validated `model_remains` item is retained. Current and weekly windows are rendered separately with model/resource name, used/remaining/limit or remaining percent, status, boost, start/end timestamps and remaining duration when present.
 - China and international Token Plan keys are separate products and must not share endpoint defaults.
@@ -104,6 +107,8 @@ The MIT-licensed `LaughSmiles/glm-key-monitor` project demonstrates three API-ke
 
 Requests send the BigModel API key directly in the `Authorization` header and accept optional `startTime` and `endTime` query parameters. The observed quota schema includes a plan `level` and a `limits` array whose entries contain `type`, `unit`, `number`, `percentage`, `nextResetTime`, optional current usage, and optional per-model usage details. Legacy responses use `TOKENS_LIMIT`; GLM Max responses verified on 2026-08-24 use `CREDIT_LIMIT` for both a 5-hour window (`unit=3`, `number=5`) and a weekly window (`unit=6`, `number=1`). The adapter prefers `CREDIT_LIMIT` when both generations coexist, falls back to `TOKENS_LIMIT`, preserves every recognized window in details, and uses the tightest window (largest percentage) for the dashboard summary and cooldown, so a fresh 5-hour reset never hides a heavily consumed weekly window (verified 2026-08-28: 5h=1% vs weekly=63%).
 
+Team Coding Plan (verified via sub2api/cc-switch, 2026-10-09): team credentials add `?type=2` to the quota endpoint and carry `bigmodel-organization: <org id>` plus optional `bigmodel-project: <project id>` request headers — without them the official API answers `当前用户不存在coding plan` even for a valid team key. The response shape is identical to the personal plan. Credentials with a non-empty organization id are stored as camelCase JSON (`{"apiKey","organization","project"?}`); personal credentials stay bare keys for backward compatibility with existing instances and backups.
+
 Verified 2026-08-19: a valid pay-as-you-go key without a Coding Plan subscription gets HTTP 200 with `{"code":500,"msg":"当前用户不存在coding plan","success":false}` from both endpoints. The adapter maps this body to the dedicated `GLM_NO_CODING_PLAN` error and refuses to save the credential; the key itself is not invalid.
 
 Negative verification 2026-08-19 — no pay-as-you-go data source exists: Zhipu publishes no balance/usage/account API (the docs.bigmodel.cn sitemap enumerates only model, tool, batch, file, knowledge-base, and agent APIs); probed and rejected with 404: `/api/paas/v4/users/balance`, `/api/paas/v4/balance`, `/api/paas/v4/users/me`, `/api/paas/v4/dashboard/billing/{subscription,usage,credit_grants}`; community tooling (cc-switch #1588, glm-key-monitor) queries only the Coding-Plan monitor endpoints above; the official fee FAQ points users to the console finance page. A non-Coding-Plan GLM adapter is therefore blocked upstream, not by this app.
@@ -140,6 +145,28 @@ These endpoints are not currently documented in GLM's public official API refere
 - Authentication: standard Bearer API key from the PPIO open platform.
 - Response fields `availableBalance`, `cashBalance`, and `creditLimit` arrive as strings in units of 1/10,000 CNY and are converted to yuan at the Rust boundary.
 - Usage and per-key breakdowns remain console-only per the official FAQ.
+
+### OpenCode Go Subscription Usage
+
+- Endpoint: `GET https://opencode.ai/zen/go/v1/usage` (Bearer API key of the OpenCode Go subscription).
+- Response: `usage.{rolling,weekly,monthly}` each `{percent, resetsAt}` — `percent` is an already-used percentage and `resetsAt` an RFC 3339 timestamp; windows are individually optional and skipped when absent.
+- `rolling` is the 5-hour-style window. The tightest window headlines the row (Kimi Code convention); every window becomes a detail entry. Plan label is fixed "OpenCode Go".
+- Pay-as-you-go Zen keys (`opencode.ai/zen/v1`, no subscription) have no usage window and are out of scope.
+
+### Grok Subscription Billing (SuperGrok)
+
+- OAuth: PKCE authorization-code flow against `https://auth.x.ai` with a fixed loopback redirect (`127.0.0.1:56121/callback`), client id and scopes per the public Grok CLI registration (`openid profile email offline_access grok-cli:access api:access`). Tokens refresh with `grant_type=refresh_token` (no client secret); refresh tokens rotate and the old value is kept when a response omits one. `expires_in <= 0` falls back to a 6-hour TTL; the app refreshes inside a 5-minute margin before expiry and writes the rotated credential back to the vault.
+- Weekly endpoint: `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` — `config.currentPeriod{start,end}` (RFC 3339), `creditUsagePercent` (used %), `productUsage[]`, and dollar-denominated `prepaidBalance` / `onDemandCap` / `onDemandUsed`.
+- Monthly endpoint: `GET https://cli-chat-proxy.grok.com/v1/billing` — `config.monthlyLimit` and `used` are **US cents**; `billingPeriodStart/End` bound the cycle. Money fields arrive as `{"val": n}`, bare numbers, or strings.
+- Requests carry the Grok CLI identity headers (`x-xai-token-auth: xai-grok-cli`, `x-grok-client-version`, `x-grok-client-mode: interactive`) and CLI user agent; versions below 1.0.13 are rejected by the proxy.
+- Monthly ceilings of $150 / $1,500 map to "SuperGrok" / "SuperGrok Heavy". The two windows degrade independently (429 on one still shows the other); a 403 with an entitlement marker means the subscription itself is gone.
+
+### Google Antigravity Quota
+
+- OAuth: standard Google PKCE with `access_type=offline&prompt=consent` and the Antigravity desktop client registration (loopback redirect `localhost:8085/callback`; scopes cloud-platform, userinfo, cclog, experimentsandconfigs). Token refresh includes the client secret; the credential stores a project id once resolved.
+- Project discovery: `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` with `{"metadata":{"ideType":"ANTIGRAVITY","ideVersion":"2.9.1"}}` returns `cloudaicompanionProject`, tier (`currentTier`/`paidTier` as string or `{id,name}`), and `paidTier.availableCredits[]` (string amounts).
+- Quota: `POST …/v1internal:fetchAvailableModels` with `{"project":"<id>"}` returns `models.<name>.quotaInfo.{remainingFraction (0–1), resetTime (RFC 3339)}`. Utilization is `(1 − remainingFraction) × 100`; the tightest model headlines the row.
+- Requests use the IDE user agent (`antigravity/2.9.1 windows/amd64`); connection errors, 429/408/404, and 5xx fall back to `https://daily-cloudcode-pa.googleapis.com` (401/403 do not). A 403 body may request account validation — surfaced as a re-authorization error rather than fake zeros.
 
 ## Plan Semantics Verified
 

@@ -35,7 +35,7 @@
 
 ## 支持的供应商
 
-智谱 GLM、Kimi / Kimi Code、DeepSeek、MiniMax、硅基流动 / SiliconFlow、OpenRouter、OpenAI / Codex、Claude Code、Anthropic API、Gemini Code Assist、Qwen、xAI / Grok、PPIO 派欧云等 15+ 家。
+智谱 GLM（含团队版）、Kimi / Kimi Code、DeepSeek、MiniMax、硅基流动 / SiliconFlow、OpenRouter、OpenAI / Codex、Claude Code、Anthropic API、Gemini Code Assist、Qwen、xAI / Grok、Grok 订阅（SuperGrok）、Google Antigravity、OpenCode Go、PPIO 派欧云等 18 家。
 
 各产品数据来源与统计口径见 [供应商能力矩阵](docs/PROVIDER_MATRIX.md)。
 

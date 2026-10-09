@@ -24,6 +24,16 @@ describe("provider catalog", () => {
     expect(ids).toContain("gemini");
     expect(ids).toContain("qwen_cn");
     expect(ids).toContain("qwen_global");
+    expect(ids).toContain("opencode_go");
+    expect(ids).toContain("grok");
+    expect(ids).toContain("antigravity");
+  });
+
+  it("marks the OAuth providers as browser-authorized", () => {
+    expect(providerDefinition("grok")?.auth).toBe("grok");
+    expect(providerDefinition("antigravity")?.auth).toBe("antigravity");
+    expect(providerDefinition("grok")?.fields).toEqual([]);
+    expect(providerDefinition("kimi_cn")?.auth).toBeUndefined();
   });
 
   it("assigns each provider a local Lobe Icons SVG", () => {
@@ -166,6 +176,56 @@ describe("provider credentials", () => {
   it("rejects incomplete credential forms", () => {
     expect(() => serializeProviderCredential("gemini", { projectId: "sample-project" })).toThrow(
       "请填写所有必填项",
+    );
+    expect(() => serializeProviderCredential("glm", { organization: "org-1" })).toThrow(
+      "请填写所有必填项",
+    );
+  });
+
+  it("keeps GLM personal credentials as the bare key and team ones as JSON", () => {
+    // Optional organization/project left blank: stored exactly like the
+    // historical single-field shape so old instances and backups keep working.
+    expect(serializeProviderCredential("glm", { apiKey: "  glm-key  " })).toBe("glm-key");
+    expect(
+      serializeProviderCredential("glm", { apiKey: "glm-key", organization: "  ", project: "" }),
+    ).toBe("glm-key");
+
+    // A team organization id upgrades the credential to JSON; empty optional
+    // fields are dropped from the stored object.
+    expect(
+      JSON.parse(
+        serializeProviderCredential("glm", {
+          apiKey: "glm-key",
+          organization: "org-123",
+          project: "  ",
+        }),
+      ),
+    ).toEqual({ apiKey: "glm-key", organization: "org-123" });
+
+    expect(
+      JSON.parse(
+        serializeProviderCredential("glm", {
+          apiKey: "glm-key",
+          organization: "org-123",
+          project: "proj-9",
+        }),
+      ),
+    ).toEqual({ apiKey: "glm-key", organization: "org-123", project: "proj-9" });
+  });
+
+  it("round-trips GLM credentials of both shapes into dialog fields", () => {
+    expect(deserializeProviderCredential("glm", "glm-key")).toEqual({ apiKey: "glm-key" });
+    expect(
+      deserializeProviderCredential("glm", '{"apiKey":"glm-key","organization":"org-123"}'),
+    ).toEqual({ apiKey: "glm-key", organization: "org-123" });
+  });
+
+  it("refuses manual credential serialization for OAuth providers", () => {
+    expect(() => serializeProviderCredential("grok", { apiKey: "x" })).toThrow(
+      "该供应商通过浏览器授权",
+    );
+    expect(() => serializeProviderCredential("antigravity", {})).toThrow(
+      "该供应商通过浏览器授权",
     );
   });
 

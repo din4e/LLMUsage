@@ -520,6 +520,7 @@ dialog form { padding: 18px; }
 .close-button:hover { border-color: var(--line); color: var(--accent); }
 .credential-field { position: relative; }
 .credential-field input.has-reveal { padding-right: 58px; }
+.credential-auth-note { margin: 4px 0 2px; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .credential-toggle { position: absolute; right: 7px; bottom: 7px; min-height: 24px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 2px; background: var(--surface); color: var(--muted); font-size: 12px; cursor: pointer; }
 .credential-toggle:hover { border-color: var(--line-strong); color: var(--text); }
 label { display: block; margin: 9px 0 4px; color: var(--muted); font-size: 13px; }

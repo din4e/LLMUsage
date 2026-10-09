@@ -5,7 +5,9 @@ import deepSeekLogo from "@lobehub/icons-static-svg/icons/deepseek-color.svg";
 import geminiLogo from "@lobehub/icons-static-svg/icons/gemini-color.svg";
 import kimiLogo from "@lobehub/icons-static-svg/icons/kimi-color.svg";
 import miniMaxLogo from "@lobehub/icons-static-svg/icons/minimax-color.svg";
+import antigravityLogo from "@lobehub/icons-static-svg/icons/antigravity.svg";
 import openRouterLogo from "@lobehub/icons-static-svg/icons/openrouter.svg";
+import opencodeLogo from "@lobehub/icons-static-svg/icons/opencode.svg";
 import ppioLogo from "@lobehub/icons-static-svg/icons/ppio-color.svg";
 import qwenLogo from "@lobehub/icons-static-svg/icons/qwen-color.svg";
 import siliconCloudLogo from "@lobehub/icons-static-svg/icons/siliconcloud-color.svg";
@@ -19,6 +21,8 @@ export interface ProviderField {
   type: "text" | "password" | "url";
   placeholder: string;
   autocomplete?: string;
+  /** Optional fields may stay empty; empty ones are dropped from the stored credential. */
+  optional?: boolean;
 }
 
 export interface ProviderDefinition {
@@ -28,6 +32,8 @@ export interface ProviderDefinition {
   logo: string;
   credentialHint: string;
   fields: ProviderField[];
+  /** OAuth providers authorize in the system browser instead of a form. */
+  auth?: "grok" | "antigravity";
 }
 
 const apiKeyField = (label = "API Key", placeholder = "输入供应商 API Key"): ProviderField => ({
@@ -42,10 +48,14 @@ export const providerDefinitions: ProviderDefinition[] = [
   {
     id: "glm",
     name: "智谱 GLM",
-    subtitle: "Coding Plan · 兼容监控",
+    subtitle: "Coding Plan · 兼容监控 · 团队版",
     logo: zhipuLogo,
-    credentialHint: "需要订阅 GLM Coding Plan 的账号 API Key（监控 5 小时额度窗口）；普通按量付费 Key 无法查询，保存时会被拒绝。完整密钥仅交给 Rust 后端并由 Windows DPAPI 加密。",
-    fields: [apiKeyField()],
+    credentialHint: "需要订阅 GLM Coding Plan 的账号 API Key（监控 5 小时额度窗口）；普通按量付费 Key 无法查询，保存时会被拒绝。团队版请额外填写组织 ID（控制台团队页），项目 ID 可选。完整密钥仅交给 Rust 后端并由 Windows DPAPI 加密。",
+    fields: [
+      apiKeyField(),
+      { id: "organization", label: "组织 ID（团队版选填）", type: "text", placeholder: "个人版留空", autocomplete: "off", optional: true },
+      { id: "project", label: "项目 ID（可选）", type: "text", placeholder: "团队版默认项目可留空", autocomplete: "off", optional: true },
+    ],
   },
   {
     id: "kimi_cn",
@@ -181,6 +191,32 @@ export const providerDefinitions: ProviderDefinition[] = [
     credentialHint: "使用国际站高级监控的公网 Prometheus HTTP API 地址及最小权限 AccessKey。",
     fields: qwenFields(),
   },
+  {
+    id: "opencode_go",
+    name: "OpenCode Go",
+    subtitle: "订阅额度 · 滚动/周/月窗口",
+    logo: opencodeLogo,
+    credentialHint: "使用 OpenCode Go 订阅的 API Key（opencode.ai/zen），查询滚动（5 小时）、周与月度额度窗口。",
+    fields: [apiKeyField()],
+  },
+  {
+    id: "grok",
+    name: "Grok 订阅",
+    subtitle: "SuperGrok · 周 Credits / 月度账单",
+    logo: xaiLogo,
+    credentialHint: "需要 SuperGrok 订阅。点击「授权并保存」后在系统浏览器登录 xAI 账号完成授权；应用只在本机回环端口接收授权码，令牌由 Windows DPAPI 加密保存。",
+    fields: [],
+    auth: "grok",
+  },
+  {
+    id: "antigravity",
+    name: "Google Antigravity",
+    subtitle: "模型额度 · 滚动窗口与 AI Credits",
+    logo: antigravityLogo,
+    credentialHint: "需要 Google Antigravity 账号。点击「授权并保存」后在系统浏览器完成 Google 授权；项目 ID 自动识别，令牌由 Windows DPAPI 加密保存。",
+    fields: [],
+    auth: "antigravity",
+  },
 ];
 
 function qwenFields(): ProviderField[] {
@@ -247,12 +283,24 @@ export function serializeProviderCredential(
 ): string {
   const provider = providerDefinition(providerId);
   if (!provider) throw new Error("暂不支持该供应商");
+  if (provider.auth) throw new Error("该供应商通过浏览器授权，无需填写凭据");
 
-  const fields = Object.fromEntries(
+  const trimmed = Object.fromEntries(
     provider.fields.map((field) => [field.id, values[field.id]?.trim() ?? ""]),
   );
-  if (Object.values(fields).some((value) => !value)) throw new Error("请填写所有必填项");
-  if (provider.fields.length === 1 && provider.fields[0]?.id === "apiKey") return fields.apiKey ?? "";
+  if (provider.fields.some((field) => !field.optional && !trimmed[field.id])) {
+    throw new Error("请填写所有必填项");
+  }
+  // Drop empty optional fields so the stored credential stays minimal; when
+  // every optional field is empty the bare apiKey is stored exactly like a
+  // single-field provider (older instances and backups keep working).
+  const fields = Object.fromEntries(
+    (Object.entries(trimmed) as [string, string][]).filter(([, value]) => value !== ""),
+  );
+  const apiKeyOnly = provider.fields.some((field) => field.id === "apiKey" && !field.optional);
+  if (apiKeyOnly && Object.keys(fields).length === 1 && fields.apiKey !== undefined) {
+    return fields.apiKey;
+  }
   return JSON.stringify(fields);
 }
 

@@ -30,6 +30,19 @@ const USD_CNY_RATE_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
 /// instead of looping forever on a broken cursor.
 const MAX_ANALYTICS_PAGES: usize = 10;
 
+/// Grok CLI chat proxy identity (reverse-engineered from the official Grok
+/// CLI; the proxy rejects requests below version 1.0.13).
+const GROK_CLI_BASE: &str = "https://cli-chat-proxy.grok.com/v1";
+const GROK_CLI_VERSION: &str = "1.0.46";
+const GROK_CLI_USER_AGENT: &str = "grok-pager/1.0.46 grok-shell/1.0.46 (windows; x86_64)";
+
+/// Antigravity desktop identity, mirrored from the official IDE.
+const ANTIGRAVITY_VERSION: &str = "2.9.1";
+const ANTIGRAVITY_USER_AGENT: &str = "antigravity/2.9.1 windows/amd64";
+/// Monthly spend ceilings that identify the SuperGrok plans (US cents).
+const SUPERGROK_LIMIT_CENTS: f64 = 15_000.0;
+const SUPERGROK_HEAVY_LIMIT_CENTS: f64 = 150_000.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnlineProvider {
     KimiCn,
@@ -48,6 +61,9 @@ pub enum OnlineProvider {
     QwenGlobal,
     Xai,
     Ppio,
+    OpenCodeGo,
+    GrokSubscription,
+    Antigravity,
 }
 
 impl OnlineProvider {
@@ -69,6 +85,9 @@ impl OnlineProvider {
             "qwen_global" => Some(Self::QwenGlobal),
             "xai" => Some(Self::Xai),
             "ppio" => Some(Self::Ppio),
+            "opencode_go" => Some(Self::OpenCodeGo),
+            "grok" => Some(Self::GrokSubscription),
+            "antigravity" => Some(Self::Antigravity),
             _ => None,
         }
     }
@@ -91,6 +110,9 @@ impl OnlineProvider {
             Self::QwenGlobal => "qwen_global",
             Self::Xai => "xai",
             Self::Ppio => "ppio",
+            Self::OpenCodeGo => "opencode_go",
+            Self::GrokSubscription => "grok",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -112,6 +134,9 @@ impl OnlineProvider {
             Self::QwenGlobal => "Qwen / Model Studio Global",
             Self::Xai => "xAI / Grok",
             Self::Ppio => "PPIO 派欧云",
+            Self::OpenCodeGo => "OpenCode Go",
+            Self::GrokSubscription => "Grok 订阅",
+            Self::Antigravity => "Google Antigravity",
         }
     }
 
@@ -124,10 +149,12 @@ impl OnlineProvider {
             Self::KimiGlobal => &["https://api.moonshot.ai/v1/users/me/balance"],
             Self::DeepSeek => &["https://api.deepseek.com/user/balance"],
             Self::MiniMaxCn => &[
+                "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
                 "https://www.minimaxi.com/v1/token_plan/remains",
                 "https://api.minimaxi.com/v1/token_plan/remains",
             ],
             Self::MiniMaxGlobal => &[
+                "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
                 "https://www.minimax.io/v1/token_plan/remains",
                 "https://api.minimax.io/v1/token_plan/remains",
             ],
@@ -145,7 +172,13 @@ impl OnlineProvider {
                 &["https://api.anthropic.com/v1/organizations/usage_report/messages"]
             }
             Self::Ppio => &["https://api.ppio.com/openapi/v1/billing/balance/detail"],
-            Self::Gemini | Self::QwenCn | Self::QwenGlobal | Self::Xai => &[],
+            Self::OpenCodeGo => &["https://opencode.ai/zen/go/v1/usage"],
+            Self::Gemini
+            | Self::QwenCn
+            | Self::QwenGlobal
+            | Self::Xai
+            | Self::GrokSubscription
+            | Self::Antigravity => &[],
         }
     }
 
@@ -164,11 +197,22 @@ impl OnlineProvider {
             Self::QwenCn | Self::QwenGlobal => "official_prometheus_monitoring",
             Self::Xai => "official_prepaid_balance",
             Self::Ppio => "official_balance",
+            Self::OpenCodeGo => "official_opencode_usage",
+            Self::GrokSubscription => "grok_cli_billing",
+            Self::Antigravity => "antigravity_quota",
         }
     }
 
     fn experimental(self) -> bool {
-        matches!(self, Self::KimiCn | Self::MiniMaxCn | Self::MiniMaxGlobal)
+        matches!(
+            self,
+            Self::KimiCn
+                | Self::MiniMaxCn
+                | Self::MiniMaxGlobal
+                | Self::OpenCodeGo
+                | Self::GrokSubscription
+                | Self::Antigravity
+        )
     }
 
     /// Parses `kimi_cn` (instance 1) or `kimi_cn_2` (instance 2 and up) into a
@@ -311,6 +355,7 @@ enum AnalyticsCredential {
     Gemini { project_id: String },
     Qwen { endpoint: reqwest::Url },
     Xai { team_id: String },
+    Antigravity { project_id: Option<String> },
 }
 
 #[derive(Deserialize)]
@@ -496,6 +541,38 @@ impl OnlineClient {
                     false,
                 )
             }
+            OnlineProvider::GrokSubscription | OnlineProvider::Antigravity => {
+                // OAuth credentials minted by the loopback authorization flow
+                // (oauth_flow.rs); the access token doubles as the bearer.
+                let mut credential: crate::oauth_flow::OAuthCredential =
+                    serde_json::from_str(trimmed).map_err(|_| OnlineError::InvalidCredential)?;
+                if credential.access_token.is_empty()
+                    || credential.access_token.len() > 3072
+                    || credential.refresh_token.is_empty()
+                {
+                    credential.access_token.zeroize();
+                    credential.refresh_token.zeroize();
+                    return Err(OnlineError::InvalidCredential);
+                }
+                let authorization =
+                    match sensitive_bearer_header(&credential.access_token) {
+                        Ok(header) => header,
+                        Err(error) => {
+                            credential.access_token.zeroize();
+                            credential.refresh_token.zeroize();
+                            return Err(error);
+                        }
+                    };
+                credential.access_token.zeroize();
+                credential.refresh_token.zeroize();
+                let analytics = match provider {
+                    OnlineProvider::Antigravity => Some(AnalyticsCredential::Antigravity {
+                        project_id: credential.project_id.clone(),
+                    }),
+                    _ => None,
+                };
+                (authorization, sensitive_header("unused")?, analytics, false)
+            }
             _ => (
                 sensitive_bearer_header(trimmed)?,
                 sensitive_header(trimmed)?,
@@ -569,6 +646,8 @@ impl OnlineClient {
                 return self.fetch_qwen_analytics(range).await;
             }
             OnlineProvider::Xai => return self.fetch_xai_balance(range).await,
+            OnlineProvider::GrokSubscription => return self.fetch_grok_billing().await,
+            OnlineProvider::Antigravity => return self.fetch_antigravity_quota().await,
             _ => {}
         }
         let mut last_error = OnlineError::RequestFailed;
@@ -705,6 +784,167 @@ impl OnlineClient {
             .push("balance");
         let json = self.fetch_bearer_json(url).await?;
         parse_xai_balance(self.provider, &json, range)
+    }
+
+    /// Grok subscription (SuperGrok) billing: the weekly credits window and
+    /// the monthly limits are two GETs against the Grok CLI chat proxy. Both
+    /// are fetched concurrently and degrade independently — a 429 on one
+    /// window still shows the other instead of failing the whole row.
+    async fn fetch_grok_billing(&self) -> Result<OnlineSnapshot, OnlineError> {
+        let weekly_url = format!("{GROK_CLI_BASE}/billing?format=credits");
+        let monthly_url = format!("{GROK_CLI_BASE}/billing");
+        let (weekly, monthly) = tokio::join!(
+            self.fetch_grok_billing_text(&weekly_url),
+            self.fetch_grok_billing_text(&monthly_url),
+        );
+        if weekly.is_err() && monthly.is_err() {
+            return Err(OnlineError::ApiRejected);
+        }
+        parse_grok_billing(self.provider, weekly.ok().as_deref(), monthly.ok().as_deref())
+    }
+
+    async fn fetch_grok_billing_text(&self, url: &str) -> Result<String, OnlineError> {
+        let request = self.grok_billing_request(url)?;
+        let response = self
+            .client
+            .execute(request)
+            .await
+            .map_err(|_| OnlineError::RequestFailed)?;
+        if !response.status().is_success() {
+            return Err(OnlineError::ApiRejected);
+        }
+        response
+            .text()
+            .await
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    fn grok_billing_request(&self, url: &str) -> Result<reqwest::Request, OnlineError> {
+        self.client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(
+                reqwest::header::HeaderName::from_static("x-xai-token-auth"),
+                "xai-grok-cli",
+            )
+            .header(
+                reqwest::header::HeaderName::from_static("x-grok-client-version"),
+                GROK_CLI_VERSION,
+            )
+            .header(
+                reqwest::header::HeaderName::from_static("x-grok-client-mode"),
+                "interactive",
+            )
+            .header(reqwest::header::USER_AGENT, GROK_CLI_USER_AGENT)
+            .build()
+            .map_err(|_| OnlineError::RequestFailed)
+    }
+
+    /// Antigravity quota: `loadCodeAssist` resolves the Cloud Companion
+    /// project (when the credential does not carry one yet) plus tier and
+    /// credits; `fetchAvailableModels` reports per-model remaining fractions.
+    /// Both calls try the production host first and fall back to the daily
+    /// host on transport errors, 429/408/404, or 5xx.
+    async fn fetch_antigravity_quota(&self) -> Result<OnlineSnapshot, OnlineError> {
+        let AnalyticsCredential::Antigravity { project_id } = self
+            .analytics_credential
+            .as_ref()
+            .ok_or(OnlineError::InvalidCredential)?
+        else {
+            return Err(OnlineError::InvalidCredential);
+        };
+        let project_id = match project_id {
+            Some(project_id) => project_id.clone(),
+            None => self
+                .antigravity_text(
+                    "https://cloudcode-pa.googleapis.com",
+                    "loadCodeAssist",
+                    serde_json::json!({
+                        "metadata": {"ideType": "ANTIGRAVITY", "ideVersion": ANTIGRAVITY_VERSION, "ideName": "antigravity"}
+                    }),
+                )
+                .await
+                .ok()
+                .and_then(|meta| {
+                    serde_json::from_str::<Value>(&meta)
+                        .ok()?
+                        .get("cloudaicompanionProject")?
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .ok_or(OnlineError::ApiRejected)?,
+        };
+        let (models, meta) = tokio::join!(
+            self.antigravity_text(
+                "https://cloudcode-pa.googleapis.com",
+                "fetchAvailableModels",
+                serde_json::json!({ "project": project_id }),
+            ),
+            self.antigravity_text(
+                "https://cloudcode-pa.googleapis.com",
+                "loadCodeAssist",
+                serde_json::json!({
+                    "metadata": {"ideType": "ANTIGRAVITY", "ideVersion": ANTIGRAVITY_VERSION, "ideName": "antigravity"}
+                }),
+            ),
+        );
+        let models = models.map_err(|_| OnlineError::ApiRejected)?;
+        parse_antigravity_quota(self.provider, &models, meta.ok().as_deref())
+    }
+
+    /// POSTs an Antigravity `v1internal` RPC with the IDE user agent,
+    /// falling back to the daily host when the production host is degraded.
+    async fn antigravity_text(
+        &self,
+        base_url: &str,
+        action: &str,
+        body: Value,
+    ) -> Result<String, OnlineError> {
+        let daily_base = "https://daily-cloudcode-pa.googleapis.com";
+        let mut last_error = OnlineError::RequestFailed;
+        for base in [base_url, daily_base] {
+            if !matches!(
+                base,
+                "https://cloudcode-pa.googleapis.com" | "https://daily-cloudcode-pa.googleapis.com"
+            ) {
+                return Err(OnlineError::InvalidProvider);
+            }
+            let request = self
+                .client
+                .post(format!("{base}/v1internal:{action}"))
+                .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header(reqwest::header::USER_AGENT, ANTIGRAVITY_USER_AGENT)
+                .json(&body)
+                .build()
+                .map_err(|_| OnlineError::RequestFailed)?;
+            let response = match self.client.execute(request).await {
+                Ok(response) => response,
+                Err(_) => {
+                    last_error = OnlineError::RequestFailed;
+                    continue;
+                }
+            };
+            let status = response.status();
+            let retryable =
+                status.as_u16() == 429 || status.as_u16() == 408 || status.as_u16() == 404
+                    || status.is_server_error();
+            if !status.is_success() {
+                last_error = OnlineError::ApiRejected;
+                if retryable {
+                    continue;
+                }
+                return Err(last_error);
+            }
+            return response
+                .text()
+                .await
+                .map_err(|_| OnlineError::RequestFailed);
+        }
+        Err(last_error)
     }
 
     async fn fetch_gemini_analytics(
@@ -1053,6 +1293,33 @@ fn rfc3339_millis(value: i64) -> Result<String, OnlineError> {
         .ok_or(OnlineError::InvalidCredential)
 }
 
+/// Refreshes an OAuth provider's access token when it is expired or inside
+/// the refresh margin. Returns the updated credential JSON to persist, or
+/// `None` when no refresh was needed — or when the refresh failed, in which
+/// case the stale token surfaces a normal sync failure instead of blocking
+/// the row.
+pub async fn refresh_provider_credential(
+    provider: OnlineProvider,
+    credential: &str,
+) -> Option<String> {
+    let oauth_provider = match provider {
+        OnlineProvider::GrokSubscription => crate::oauth_flow::OAuthProvider::Grok,
+        OnlineProvider::Antigravity => crate::oauth_flow::OAuthProvider::Antigravity,
+        _ => return None,
+    };
+    let mut previous: crate::oauth_flow::OAuthCredential =
+        serde_json::from_str(credential.trim()).ok()?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if !previous.needs_refresh(now_ms) {
+        return None;
+    }
+    let tokens = crate::oauth_flow::refresh(oauth_provider, &previous.refresh_token).await.ok()?;
+    let refreshed = crate::oauth_flow::refreshed_credential(&previous, &tokens, now_ms);
+    previous.access_token.zeroize();
+    previous.refresh_token.zeroize();
+    serde_json::to_string(&refreshed).ok()
+}
+
 pub fn parse_snapshot(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, OnlineError> {
     match provider {
         OnlineProvider::KimiCn => {
@@ -1069,10 +1336,13 @@ pub fn parse_snapshot(provider: OnlineProvider, json: &str) -> Result<OnlineSnap
         OnlineProvider::AnthropicApi => parse_anthropic_messages(provider, json),
         OnlineProvider::Xai => parse_xai_balance(provider, json, OnlineUsageRange::current_utc_day()?),
         OnlineProvider::Ppio => parse_ppio(provider, json),
+        OnlineProvider::OpenCodeGo => parse_opencode_go(provider, json),
         OnlineProvider::OpenAiCodex
         | OnlineProvider::Gemini
         | OnlineProvider::QwenCn
-        | OnlineProvider::QwenGlobal => Err(OnlineError::SchemaMismatch),
+        | OnlineProvider::QwenGlobal
+        | OnlineProvider::GrokSubscription
+        | OnlineProvider::Antigravity => Err(OnlineError::SchemaMismatch),
     }
 }
 
@@ -1467,6 +1737,15 @@ fn parse_minimax(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot,
     if looks_like_minimax_rejection(&value) {
         return Err(OnlineError::ApiRejected);
     }
+    // The coding_plan endpoint answers a dedicated shape (`model_remains[]`
+    // keyed by model_name, plus a subscription title) that the generic
+    // recursive quota finder would mis-read: it would latch onto the first
+    // array entry, which can be the video quota, not the coding quota. The
+    // token_plan endpoint also returns `model_remains` (many models, count
+    // based), so `current_subscribe_title` is the discriminator.
+    if value.get("current_subscribe_title").is_some() {
+        return parse_minimax_coding_plan(provider, &value);
+    }
     let quota = find_minimax_count_quota(&value)
         .or_else(|| {
             let remaining_percent = find_f64_key(&value, "usage_percent")
@@ -1504,6 +1783,197 @@ fn parse_minimax(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot,
         secondary_value: quota.detail,
         detail_sections,
     })
+}
+
+/// Parses the `coding_plan/remains` shape: `model_remains[]` entries keyed by
+/// `model_name`, where only the `general` entry is the coding-plan quota
+/// (video is skipped), plus the subscription title. Percent fields are
+/// REMAINING percents, so used = 100 − remaining. The weekly window only
+/// exists while `current_weekly_status == 1`.
+fn parse_minimax_coding_plan(
+    provider: OnlineProvider,
+    value: &Value,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let general = value
+        .get("model_remains")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("model_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.trim().eq_ignore_ascii_case("general"))
+            })
+        })
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let remaining = general
+        .get("current_interval_remaining_percent")
+        .and_then(number_like_f64)
+        .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
+        .ok_or(OnlineError::SchemaMismatch)?;
+    let used_percent = 100.0 - remaining;
+    let reset_at_ms = general
+        .get("end_time")
+        .and_then(timestamp_value)
+        .or_else(|| find_reset_timestamp(value));
+
+    let mut entries = vec![OnlineDetailEntry {
+        label: "5 小时窗口".to_string(),
+        used: Some(format!("{used_percent:.1}%")),
+        remaining: Some(format!("{remaining:.1}%")),
+        limit: None,
+        unit: "%".to_string(),
+        used_percent: Some(used_percent),
+        window: None,
+        start_at_ms: None,
+        reset_at_ms,
+        remaining_ms: None,
+    }];
+    let mut cooldown = reset_at_ms;
+    if general.get("current_weekly_status").and_then(number_like_i64) == Some(1) {
+        if let Some(weekly_remaining) = general
+            .get("current_weekly_remaining_percent")
+            .and_then(number_like_f64)
+            .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
+        {
+            let weekly_used = 100.0 - weekly_remaining;
+            let weekly_reset = general
+                .get("weekly_end_time")
+                .and_then(timestamp_value)
+                .or(cooldown);
+            cooldown = cooldown.max(weekly_reset);
+            entries.push(OnlineDetailEntry {
+                label: "周额度".to_string(),
+                used: Some(format!("{weekly_used:.1}%")),
+                remaining: Some(format!("{weekly_remaining:.1}%")),
+                limit: None,
+                unit: "%".to_string(),
+                used_percent: Some(weekly_used),
+                window: None,
+                start_at_ms: None,
+                reset_at_ms: weekly_reset,
+                remaining_ms: None,
+            });
+        }
+    }
+    let subscription = value
+        .get("current_subscribe_title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    let mut secondary = format!("编程套餐 · 剩余 {remaining:.1}%");
+    if let Some(title) = subscription {
+        secondary = format!("{title} · 剩余 {remaining:.1}%");
+    }
+    Ok(OnlineSnapshot {
+        provider_id: provider.id().to_string(),
+        label: provider.label().to_string(),
+        source: provider.source().to_string(),
+        experimental: provider.experimental(),
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: Some(used_percent),
+        cooldown_ends_at_ms: cooldown,
+        requests: None,
+        total_tokens: None,
+        estimated_cost_cny: None,
+        primary_label: "套餐用量".to_string(),
+        primary_value: format!("{remaining:.1}%"),
+        secondary_value: secondary,
+        detail_sections: vec![OnlineDetailSection {
+            title: "额度窗口".to_string(),
+            entries,
+        }],
+    })
+}
+
+/// Parses the OpenCode Go subscription usage response:
+/// `{"usage": {"rolling"|"weekly"|"monthly": {"percent": <used %>, "resetsAt": "RFC3339"}}}`.
+/// `percent` is already a USED percent; `rolling` is the 5-hour-style window.
+/// The tightest window headlines the row (Kimi Code convention), every window
+/// becomes a detail entry.
+fn parse_opencode_go(provider: OnlineProvider, json: &str) -> Result<OnlineSnapshot, OnlineError> {
+    let response: OpenCodeUsageResponse =
+        serde_json::from_str(json).map_err(|_| OnlineError::InvalidJson)?;
+    let windows = [
+        ("rolling", "5 小时窗口", response.usage.as_ref().and_then(|u| u.rolling.clone())),
+        ("weekly", "周额度", response.usage.as_ref().and_then(|u| u.weekly.clone())),
+        ("monthly", "月额度", response.usage.as_ref().and_then(|u| u.monthly.clone())),
+    ];
+    let mut entries: Vec<OnlineDetailEntry> = Vec::new();
+    let mut headline: Option<(&'static str, f64, Option<i64>)> = None;
+    for (_, label, window) in windows {
+        let Some(window) = window else { continue };
+        let percent = window.percent;
+        if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
+            continue;
+        }
+        let reset_at_ms = window
+            .resets_at
+            .as_deref()
+            .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+            .map(|timestamp| timestamp.timestamp_millis());
+        entries.push(OnlineDetailEntry {
+            label: label.to_string(),
+            used: Some(format!("{percent:.1}%")),
+            remaining: Some(format!("{:.1}%", 100.0 - percent)),
+            limit: None,
+            unit: "%".to_string(),
+            used_percent: Some(percent),
+            window: None,
+            start_at_ms: None,
+            reset_at_ms,
+            remaining_ms: None,
+        });
+        if headline.is_none() || headline.is_some_and(|(_, best, _)| percent > best) {
+            headline = Some((label, percent, reset_at_ms));
+        }
+    }
+    let (primary_label, summary_percent, reset_at_ms) =
+        headline.ok_or(OnlineError::SchemaMismatch)?;
+    Ok(OnlineSnapshot {
+        provider_id: provider.id().to_string(),
+        label: provider.label().to_string(),
+        source: provider.source().to_string(),
+        experimental: provider.experimental(),
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: Some(summary_percent),
+        cooldown_ends_at_ms: reset_at_ms,
+        requests: None,
+        total_tokens: None,
+        estimated_cost_cny: None,
+        primary_label: primary_label.to_string(),
+        primary_value: format!("{summary_percent:.1}%"),
+        secondary_value: "OpenCode Go 订阅".to_string(),
+        detail_sections: vec![OnlineDetailSection {
+            title: "订阅窗口".to_string(),
+            entries,
+        }],
+    })
+}
+
+#[derive(Deserialize)]
+struct OpenCodeUsageResponse {
+    #[serde(default)]
+    usage: Option<OpenCodeWindows>,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeWindows {
+    #[serde(default)]
+    rolling: Option<OpenCodeWindow>,
+    #[serde(default)]
+    weekly: Option<OpenCodeWindow>,
+    #[serde(default)]
+    monthly: Option<OpenCodeWindow>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OpenCodeWindow {
+    percent: f64,
+    #[serde(default)]
+    resets_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1686,6 +2156,420 @@ fn xai_timestamp_ms(value: &str) -> Option<i64> {
         };
     }
     None
+}
+
+/// Parses the Grok subscription billing views. The weekly credits response
+/// carries the usage percent, current period, product usage, and prepaid /
+/// on-demand dollars; the monthly response carries limit/used in US cents
+/// and the billing period. Money fields arrive as `{"val": n}`, bare
+/// numbers, or strings — `grok_money_value` tolerates all three.
+fn parse_grok_billing(
+    provider: OnlineProvider,
+    weekly_json: Option<&str>,
+    monthly_json: Option<&str>,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let weekly = weekly_json
+        .map(|json| serde_json::from_str::<GrokBillingPayload>(json))
+        .transpose()
+        .map_err(|_| OnlineError::InvalidJson)?
+        .and_then(|payload| payload.config);
+    let monthly = monthly_json
+        .map(|json| serde_json::from_str::<GrokBillingPayload>(json))
+        .transpose()
+        .map_err(|_| OnlineError::InvalidJson)?
+        .and_then(|payload| payload.config);
+    if weekly.is_none() && monthly.is_none() {
+        return Err(OnlineError::SchemaMismatch);
+    }
+
+    let mut entries: Vec<OnlineDetailEntry> = Vec::new();
+    let mut secondary_parts: Vec<String> = Vec::new();
+    let mut balance_original = None;
+
+    // Weekly credits window (percent already used).
+    let (primary_label, summary_percent, cooldown) = if let Some(credit) =
+        weekly.as_ref().and_then(|config| config.credit_usage_percent)
+    {
+        let reset_at_ms = weekly
+            .as_ref()
+            .and_then(|config| config.current_period.as_ref())
+            .and_then(|period| period.end.as_deref())
+            .and_then(|end| chrono::DateTime::parse_from_rfc3339(end).ok())
+            .map(|datetime| datetime.timestamp_millis());
+        ("周 Credits 用量".to_string(), credit, reset_at_ms)
+    } else if let Some(percent) = monthly
+        .as_ref()
+        .and_then(|config| config.monthly_used_percent())
+    {
+        (
+            "月度用量".to_string(),
+            percent,
+            monthly
+                .as_ref()
+                .and_then(|config| config.billing_period_end.as_deref())
+                .and_then(|end| chrono::DateTime::parse_from_rfc3339(end).ok())
+                .map(|datetime| datetime.timestamp_millis()),
+        )
+    } else {
+        return Err(OnlineError::SchemaMismatch);
+    };
+
+    // Monthly window: limit/used are US cents.
+    if let Some(config) = monthly.as_ref() {
+        let limit = config
+            .monthly_limit
+            .as_ref()
+            .and_then(|value| grok_money_value(value));
+        let used = config.used.as_ref().and_then(|value| grok_money_value(value));
+        if limit.is_some() || used.is_some() {
+            let percent = config.monthly_used_percent();
+            entries.push(OnlineDetailEntry {
+                label: "月度额度".to_string(),
+                used: used.map(|cents| format_money(cents / 100.0, "USD")),
+                remaining: limit
+                    .zip(used)
+                    .map(|(limit, used)| format_money((limit - used).max(0.0) / 100.0, "USD")),
+                limit: limit.map(|cents| format_money(cents / 100.0, "USD")),
+                unit: "$".to_string(),
+                used_percent: percent,
+                window: None,
+                start_at_ms: None,
+                reset_at_ms: config
+                    .billing_period_end
+                    .as_deref()
+                    .and_then(|end| chrono::DateTime::parse_from_rfc3339(end).ok())
+                    .map(|datetime| datetime.timestamp_millis()),
+                remaining_ms: None,
+            });
+        }
+        if let Some(plan) = limit.and_then(grok_plan_name) {
+            secondary_parts.push(plan.to_string());
+        }
+    }
+
+    // Prepaid / on-demand dollars ride the weekly (credits) response.
+    if let Some(config) = weekly.as_ref() {
+        if let Some(prepaid) = config
+            .prepaid_balance
+            .as_ref()
+            .and_then(|value| grok_money_value(value))
+        {
+            balance_original = Some(Money {
+                amount: prepaid,
+                currency: "USD".to_string(),
+            });
+            entries.push(OnlineDetailEntry {
+                label: "预付余额".to_string(),
+                used: None,
+                remaining: Some(format_money(prepaid, "USD")),
+                limit: None,
+                unit: "$".to_string(),
+                used_percent: None,
+                window: None,
+                start_at_ms: None,
+                reset_at_ms: None,
+                remaining_ms: None,
+            });
+        }
+        let cap = config
+            .on_demand_cap
+            .as_ref()
+            .and_then(|value| grok_money_value(value));
+        let used = config
+            .on_demand_used
+            .as_ref()
+            .and_then(|value| grok_money_value(value));
+        if cap.is_some() || used.is_some() {
+            entries.push(OnlineDetailEntry {
+                label: "按需上限".to_string(),
+                used: used.map(|value| format_money(value, "USD")),
+                remaining: cap
+                    .zip(used)
+                    .map(|(cap, used)| format_money((cap - used).max(0.0), "USD")),
+                limit: cap.map(|value| format_money(value, "USD")),
+                unit: "$".to_string(),
+                used_percent: cap.zip(used).map(|(cap, used)| {
+                    if cap > 0.0 {
+                        (used / cap * 100.0).clamp(0.0, 100.0)
+                    } else {
+                        0.0
+                    }
+                }),
+                window: None,
+                start_at_ms: None,
+                reset_at_ms: None,
+                remaining_ms: None,
+            });
+        }
+        for product in config.product_usage.iter().take(MAX_DETAIL_ENTRIES) {
+            let Some(percent) = product.usage_percent else {
+                continue;
+            };
+            entries.push(OnlineDetailEntry {
+                label: format!("产品 · {}", product.product),
+                used: Some(format!("{percent:.1}%")),
+                remaining: Some(format!("{:.1}%", (100.0 - percent).max(0.0))),
+                limit: None,
+                unit: "%".to_string(),
+                used_percent: Some(percent),
+                window: None,
+                start_at_ms: None,
+                reset_at_ms: None,
+                remaining_ms: None,
+            });
+        }
+    }
+
+    if secondary_parts.is_empty() {
+        secondary_parts.push("SuperGrok 订阅".to_string());
+    }
+    Ok(OnlineSnapshot {
+        provider_id: provider.id().to_string(),
+        label: provider.label().to_string(),
+        source: provider.source().to_string(),
+        experimental: provider.experimental(),
+        balance_cny: None,
+        balance_original,
+        quota_used_percent: Some(summary_percent),
+        cooldown_ends_at_ms: cooldown,
+        requests: None,
+        total_tokens: None,
+        estimated_cost_cny: None,
+        primary_label,
+        primary_value: format!("{summary_percent:.1}%"),
+        secondary_value: secondary_parts.join(" · "),
+        detail_sections: vec![OnlineDetailSection {
+            title: "订阅账单".to_string(),
+            entries,
+        }],
+    })
+}
+
+#[derive(Deserialize)]
+struct GrokBillingPayload {
+    #[serde(default)]
+    config: Option<GrokBillingConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GrokBillingConfig {
+    #[serde(default)]
+    current_period: Option<GrokBillingPeriod>,
+    #[serde(default)]
+    credit_usage_percent: Option<f64>,
+    #[serde(default)]
+    product_usage: Vec<GrokProductUsage>,
+    #[serde(default)]
+    monthly_limit: Option<Value>,
+    #[serde(default)]
+    used: Option<Value>,
+    #[serde(default)]
+    prepaid_balance: Option<Value>,
+    #[serde(default)]
+    on_demand_cap: Option<Value>,
+    #[serde(default)]
+    on_demand_used: Option<Value>,
+    #[serde(default)]
+    billing_period_end: Option<String>,
+}
+
+impl GrokBillingConfig {
+    /// Monthly used percent derived from the cent fields when present.
+    fn monthly_used_percent(&self) -> Option<f64> {
+        let limit = self.monthly_limit.as_ref().and_then(grok_money_value)?;
+        let used = self.used.as_ref().and_then(grok_money_value)?;
+        (limit > 0.0).then(|| (used / limit * 100.0).clamp(0.0, 100.0))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GrokBillingPeriod {
+    #[serde(default)]
+    end: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GrokProductUsage {
+    product: String,
+    #[serde(default)]
+    usage_percent: Option<f64>,
+}
+
+/// Grok money fields arrive as `{"val": 123}`, `123`, or `"123"`.
+fn grok_money_value(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse().ok(),
+        Value::Object(map) => map.get("val").and_then(grok_money_value),
+        _ => None,
+    }
+}
+
+/// Maps the monthly spend ceiling (US cents) onto the SuperGrok plan names.
+fn grok_plan_name(limit_cents: f64) -> Option<&'static str> {
+    if (limit_cents - SUPERGROK_LIMIT_CENTS).abs() < 1.0 {
+        Some("SuperGrok")
+    } else if (limit_cents - SUPERGROK_HEAVY_LIMIT_CENTS).abs() < 1.0 {
+        Some("SuperGrok Heavy")
+    } else {
+        None
+    }
+}
+
+/// Parses the Antigravity `fetchAvailableModels` response (per-model
+/// `quotaInfo.remainingFraction`, 0.0–1.0) plus the optional `loadCodeAssist`
+/// metadata (tier + AI credits). The tightest model headlines the row.
+fn parse_antigravity_quota(
+    provider: OnlineProvider,
+    models_json: &str,
+    meta_json: Option<&str>,
+) -> Result<OnlineSnapshot, OnlineError> {
+    let models: AntigravityModelsResponse =
+        serde_json::from_str(models_json).map_err(|_| OnlineError::InvalidJson)?;
+    let meta = meta_json
+        .map(|json| serde_json::from_str::<Value>(json))
+        .transpose()
+        .map_err(|_| OnlineError::InvalidJson)?;
+
+    let mut entries: Vec<OnlineDetailEntry> = Vec::new();
+    let mut headline: Option<(String, f64, Option<i64>)> = None;
+    for (name, model) in models.models.iter() {
+        let Some(quota) = &model.quota_info else {
+            continue;
+        };
+        let Some(fraction) = quota
+            .remaining_fraction
+            .filter(|fraction| (0.0..=1.0).contains(fraction))
+        else {
+            continue;
+        };
+        let used_percent = (1.0 - fraction) * 100.0;
+        let reset_at_ms = quota
+            .reset_time
+            .as_deref()
+            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+            .map(|datetime| datetime.timestamp_millis());
+        entries.push(OnlineDetailEntry {
+            label: name.clone(),
+            used: Some(format!("{used_percent:.1}%")),
+            remaining: Some(format!("{:.1}%", fraction * 100.0)),
+            limit: None,
+            unit: "%".to_string(),
+            used_percent: Some(used_percent),
+            window: None,
+            start_at_ms: None,
+            reset_at_ms,
+            remaining_ms: None,
+        });
+        if headline
+            .as_ref()
+            .is_none_or(|(_, best, _)| used_percent > *best)
+        {
+            headline = Some((name.clone(), used_percent, reset_at_ms));
+        }
+        if entries.len() >= MAX_DETAIL_ENTRIES {
+            break;
+        }
+    }
+    let (primary_model, summary_percent, reset_at_ms) =
+        headline.ok_or(OnlineError::SchemaMismatch)?;
+
+    let mut secondary_parts = vec![format!("最紧：{primary_model}")];
+    let mut credit_entries: Vec<OnlineDetailEntry> = Vec::new();
+    if let Some(meta) = meta.as_ref() {
+        if let Some(tier) = antigravity_tier(meta) {
+            secondary_parts.push(tier);
+        }
+        if let Some(credits) = meta.get("paidTier").and_then(|tier| tier.get("availableCredits")).and_then(Value::as_array) {
+            for credit in credits {
+                let credit_type = credit.get("creditType").and_then(Value::as_str).unwrap_or("Credits");
+                let amount = credit
+                    .get("creditAmount")
+                    .and_then(Value::as_str)
+                    .and_then(|text| text.trim().parse::<f64>().ok());
+                if let Some(amount) = amount {
+                    credit_entries.push(OnlineDetailEntry {
+                        label: credit_type.to_string(),
+                        used: None,
+                        remaining: Some(format!("{amount:.0}")),
+                        limit: None,
+                        unit: "credits".to_string(),
+                        used_percent: None,
+                        window: None,
+                        start_at_ms: None,
+                        reset_at_ms: None,
+                        remaining_ms: None,
+                    });
+                }
+            }
+        }
+    }
+    let mut detail_sections = vec![OnlineDetailSection {
+        title: "模型额度".to_string(),
+        entries,
+    }];
+    if !credit_entries.is_empty() {
+        detail_sections.push(OnlineDetailSection {
+            title: "AI Credits".to_string(),
+            entries: credit_entries,
+        });
+    }
+
+    Ok(OnlineSnapshot {
+        provider_id: provider.id().to_string(),
+        label: provider.label().to_string(),
+        source: provider.source().to_string(),
+        experimental: provider.experimental(),
+        balance_cny: None,
+        balance_original: None,
+        quota_used_percent: Some(summary_percent),
+        cooldown_ends_at_ms: reset_at_ms,
+        requests: None,
+        total_tokens: None,
+        estimated_cost_cny: None,
+        primary_label: "订阅用量".to_string(),
+        primary_value: format!("{summary_percent:.1}%"),
+        secondary_value: secondary_parts.join(" · "),
+        detail_sections,
+    })
+}
+
+#[derive(Deserialize)]
+struct AntigravityModelsResponse {
+    #[serde(default)]
+    models: std::collections::BTreeMap<String, AntigravityModel>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AntigravityModel {
+    #[serde(default)]
+    quota_info: Option<AntigravityQuotaInfo>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AntigravityQuotaInfo {
+    #[serde(default)]
+    remaining_fraction: Option<f64>,
+    #[serde(default)]
+    reset_time: Option<String>,
+}
+
+/// Tier names arrive as bare strings (`"free-tier"`) or objects
+/// (`{"id": "g1-pro-tier", "name": "Pro"}`); the paid tier wins.
+fn antigravity_tier(meta: &Value) -> Option<String> {
+    let tier = meta.get("paidTier").or_else(|| meta.get("currentTier"))?;
+    if let Some(name) = tier.get("name").and_then(Value::as_str) {
+        return Some(name.to_string());
+    }
+    if let Some(id) = tier.get("id").and_then(Value::as_str) {
+        return Some(id.to_string());
+    }
+    tier.as_str().map(str::to_string)
 }
 
 #[derive(Default)]
@@ -2921,7 +3805,7 @@ mod tests {
             .expect("request");
         assert_eq!(
             minimax.url().as_str(),
-            "https://www.minimaxi.com/v1/token_plan/remains"
+            "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
         );
         assert_eq!(minimax.headers()["content-type"], "application/json");
     }
@@ -2962,8 +3846,24 @@ mod tests {
         assert_eq!(
             minimax,
             vec![
+                "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
                 "https://www.minimaxi.com/v1/token_plan/remains",
                 "https://api.minimaxi.com/v1/token_plan/remains",
+            ]
+        );
+        let global = OnlineClient::new(OnlineProvider::MiniMaxGlobal, "sk-cp-test")
+            .expect("client")
+            .requests()
+            .expect("requests")
+            .into_iter()
+            .map(|request| request.url().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            global,
+            vec![
+                "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
+                "https://www.minimax.io/v1/token_plan/remains",
+                "https://api.minimax.io/v1/token_plan/remains",
             ]
         );
     }
@@ -3460,6 +4360,250 @@ mod tests {
                 .iter()
                 .any(|entry| entry.label == format!("{resource} · 当前窗口")));
         }
+    }
+
+    #[test]
+    fn parses_minimax_coding_plan_subscription_shape() {
+        // Verbatim shape of /v1/api/openplatform/coding_plan/remains: the
+        // general entry is the coding quota, video is skipped, percents are
+        // remaining, and the weekly window only exists at status 1.
+        let json = r#"{
+          "base_resp": {"status_code": 0},
+          "current_subscribe_title": "Max",
+          "model_remains": [
+            {"model_name": "video", "current_interval_remaining_percent": 10},
+            {
+              "model_name": "general",
+              "current_interval_remaining_percent": 25,
+              "end_time": 1700000000000,
+              "current_weekly_status": 1,
+              "current_weekly_remaining_percent": 40,
+              "weekly_end_time": 1700604800000
+            }
+          ]
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::MiniMaxCn, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "minimax_cn");
+        assert_eq!(snapshot.quota_used_percent, Some(75.0));
+        assert_eq!(snapshot.primary_value, "25.0%");
+        assert_eq!(snapshot.secondary_value, "Max · 剩余 25.0%");
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_700_604_800_000));
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "5 小时窗口");
+        assert_eq!(entries[0].used_percent, Some(75.0));
+        assert_eq!(entries[0].reset_at_ms, Some(1_700_000_000_000));
+        assert_eq!(entries[1].label, "周额度");
+        assert_eq!(entries[1].used_percent, Some(60.0));
+        assert_eq!(entries[1].reset_at_ms, Some(1_700_604_800_000));
+    }
+
+    #[test]
+    fn suppresses_minimax_weekly_window_outside_status_one() {
+        let json = r#"{
+          "current_subscribe_title": "Max",
+          "model_remains": [{
+            "model_name": "general",
+            "current_interval_remaining_percent": 80,
+            "end_time": 1700000000000,
+            "current_weekly_status": 3,
+            "current_weekly_remaining_percent": 10
+          }]
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::MiniMaxGlobal, json).expect("snapshot");
+
+        assert_eq!(snapshot.quota_used_percent, Some(20.0));
+        assert_eq!(snapshot.cooldown_ends_at_ms, Some(1_700_000_000_000));
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "5 小时窗口");
+    }
+
+    #[test]
+    fn parses_opencode_go_subscription_windows() {
+        let json = r#"{
+          "usage": {
+            "rolling": {"percent": 12.5, "resetsAt": "2026-09-07T12:00:00Z"},
+            "weekly": {"percent": 40, "resetsAt": "2026-09-10T00:00:00Z"},
+            "monthly": {"percent": 22.2, "resetsAt": "2026-10-01T00:00:00Z"}
+          }
+        }"#;
+
+        let snapshot = parse_snapshot(OnlineProvider::OpenCodeGo, json).expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "opencode_go");
+        assert_eq!(snapshot.label, "OpenCode Go");
+        assert_eq!(snapshot.source, "official_opencode_usage");
+        assert!(snapshot.experimental);
+        // The tightest window (weekly 40%) headlines the row.
+        assert_eq!(snapshot.quota_used_percent, Some(40.0));
+        assert_eq!(snapshot.primary_label, "周额度");
+        assert_eq!(snapshot.primary_value, "40.0%");
+        assert_eq!(
+            snapshot.cooldown_ends_at_ms,
+            Some(
+                DateTime::parse_from_rfc3339("2026-09-10T00:00:00Z")
+                    .expect("timestamp")
+                    .timestamp_millis()
+            )
+        );
+        let entries = &snapshot.detail_sections[0].entries;
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].label, "5 小时窗口");
+        assert_eq!(entries[0].used_percent, Some(12.5));
+        assert_eq!(entries[2].label, "月额度");
+        assert_eq!(entries[2].used_percent, Some(22.2));
+    }
+
+    #[test]
+    fn rejects_opencode_go_without_any_window() {
+        let snapshot = parse_snapshot(OnlineProvider::OpenCodeGo, r#"{"ok": true}"#);
+        assert_eq!(snapshot.unwrap_err(), OnlineError::SchemaMismatch);
+    }
+
+    #[test]
+    fn parses_grok_weekly_and_monthly_billing() {
+        let weekly = r#"{
+          "config": {
+            "currentPeriod": {"type": "WEEKLY", "start": "2026-07-09T03:25:00Z", "end": "2026-07-16T03:25:00Z"},
+            "creditUsagePercent": 2.0,
+            "productUsage": [{"product": "Api", "usagePercent": 2.0}],
+            "prepaidBalance": {"val": 12},
+            "onDemandCap": {"val": 100},
+            "onDemandUsed": {"val": 5},
+            "isUnifiedBillingUser": true
+          }
+        }"#;
+        let monthly = r#"{
+          "config": {
+            "monthlyLimit": {"val": 15000},
+            "used": {"val": 78},
+            "billingPeriodStart": "2026-07-01T00:00:00Z",
+            "billingPeriodEnd": "2026-08-01T00:00:00Z"
+          }
+        }"#;
+
+        let snapshot = parse_grok_billing(
+            OnlineProvider::GrokSubscription,
+            Some(weekly),
+            Some(monthly),
+        )
+        .expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "grok");
+        assert_eq!(snapshot.quota_used_percent, Some(2.0));
+        assert_eq!(snapshot.primary_label, "周 Credits 用量");
+        assert_eq!(snapshot.primary_value, "2.0%");
+        // $150 monthly ceiling identifies SuperGrok.
+        assert!(snapshot.secondary_value.contains("SuperGrok"));
+        assert_eq!(
+            snapshot.cooldown_ends_at_ms,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-07-16T03:25:00Z")
+                    .unwrap()
+                    .timestamp_millis()
+            )
+        );
+        // Prepaid dollars surface as a USD balance next to the quota view.
+        assert_eq!(snapshot.balance_original.as_ref().map(|m| m.amount), Some(12.0));
+        assert!(snapshot.experimental);
+        let entries = &snapshot.detail_sections[0].entries;
+        let monthly_entry = entries.iter().find(|e| e.label == "月度额度").expect("monthly");
+        assert_eq!(monthly_entry.used.as_deref(), Some("$0.78"));
+        assert_eq!(monthly_entry.limit.as_deref(), Some("$150.00"));
+        assert_eq!(monthly_entry.used_percent, Some(0.52));
+        let prepaid = entries.iter().find(|e| e.label == "预付余额").expect("prepaid");
+        assert_eq!(prepaid.remaining.as_deref(), Some("$12.00"));
+        assert!(entries.iter().any(|e| e.label == "产品 · Api"));
+    }
+
+    #[test]
+    fn parses_grok_monthly_only_billing() {
+        let monthly = r#"{
+          "config": {
+            "monthlyLimit": 150000,
+            "used": 75000,
+            "billingPeriodEnd": "2026-08-01T00:00:00Z"
+          }
+        }"#;
+
+        let snapshot =
+            parse_grok_billing(OnlineProvider::GrokSubscription, None, Some(monthly))
+                .expect("snapshot");
+
+        assert_eq!(snapshot.primary_label, "月度用量");
+        assert_eq!(snapshot.quota_used_percent, Some(50.0));
+        assert!(snapshot.secondary_value.contains("SuperGrok Heavy"));
+    }
+
+    #[test]
+    fn rejects_grok_billing_without_any_window() {
+        assert_eq!(
+            parse_grok_billing(OnlineProvider::GrokSubscription, None, Some(r#"{"config": {}}"#))
+                .unwrap_err(),
+            OnlineError::SchemaMismatch
+        );
+    }
+
+    #[test]
+    fn parses_antigravity_model_quotas_with_tier_and_credits() {
+        let models = r#"{
+          "models": {
+            "gemini-2.0-flash": {"quotaInfo": {"remainingFraction": 0.85, "resetTime": "2025-01-01T00:00:00Z"}},
+            "gemini-2.5-pro": {"quotaInfo": {"remainingFraction": 0.5}}
+          }
+        }"#;
+        let meta = r#"{
+          "cloudaicompanionProject": "project-1",
+          "currentTier": {"id": "free-tier", "name": "Free"},
+          "paidTier": {"id": "g1-pro-tier", "name": "Pro",
+            "availableCredits": [{"creditType": "GOOGLE_ONE_AI", "creditAmount": "25", "minimumCreditAmountForUsage": "5"}]}
+        }"#;
+
+        let snapshot = parse_antigravity_quota(
+            OnlineProvider::Antigravity,
+            models,
+            Some(meta),
+        )
+        .expect("snapshot");
+
+        assert_eq!(snapshot.provider_id, "antigravity");
+        // The tightest model (gemini-2.5-pro at 50%) headlines the row.
+        assert_eq!(snapshot.quota_used_percent, Some(50.0));
+        assert_eq!(snapshot.primary_value, "50.0%");
+        assert!(snapshot.secondary_value.contains("Pro"));
+        assert!(snapshot.secondary_value.contains("gemini-2.5-pro"));
+        assert_eq!(snapshot.detail_sections.len(), 2);
+        let quotas = &snapshot.detail_sections[0];
+        assert_eq!(quotas.title, "模型额度");
+        assert_eq!(quotas.entries.len(), 2);
+        let flash = quotas
+            .entries
+            .iter()
+            .find(|entry| entry.label == "gemini-2.0-flash")
+            .expect("flash");
+        assert_eq!(flash.used_percent, Some((1.0 - 0.85) * 100.0));
+        let credits = &snapshot.detail_sections[1];
+        assert_eq!(credits.title, "AI Credits");
+        assert_eq!(credits.entries[0].remaining.as_deref(), Some("25"));
+    }
+
+    #[test]
+    fn rejects_antigravity_responses_without_model_quotas() {
+        assert_eq!(
+            parse_antigravity_quota(OnlineProvider::Antigravity, r#"{"models": {}}"#, None)
+                .unwrap_err(),
+            OnlineError::SchemaMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshes_only_oauth_providers() {
+        // Non-OAuth providers never refresh, regardless of the credential text.
+        assert!(refresh_provider_credential(OnlineProvider::KimiCn, "sk-kimi-x").await.is_none());
     }
 
     #[test]

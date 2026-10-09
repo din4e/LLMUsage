@@ -60,11 +60,14 @@ impl GlmParseError {
 pub struct GlmClient {
     client: reqwest::Client,
     api_key: reqwest::header::HeaderValue,
+    organization: Option<reqwest::header::HeaderValue>,
+    project: Option<reqwest::header::HeaderValue>,
 }
 
 impl GlmClient {
     pub fn new(api_key: &str) -> Result<Self, GlmParseError> {
-        let trimmed = api_key.trim();
+        let (key, organization, project) = parse_glm_credential(api_key)?;
+        let trimmed = key.as_str();
         if trimmed.is_empty() || trimmed.len() > 4096 {
             return Err(GlmParseError::InvalidCredential);
         }
@@ -72,6 +75,8 @@ impl GlmClient {
         let mut header = reqwest::header::HeaderValue::from_str(trimmed)
             .map_err(|_| GlmParseError::InvalidCredential)?;
         header.set_sensitive(true);
+        let organization = optional_header(organization)?;
+        let project = optional_header(project)?;
         let client = reqwest::Client::builder()
             .https_only(true)
             .timeout(Duration::from_secs(15))
@@ -82,6 +87,8 @@ impl GlmClient {
         Ok(Self {
             client,
             api_key: header,
+            organization,
+            project,
         })
     }
 
@@ -90,12 +97,31 @@ impl GlmClient {
             .get(format!("{GLM_BASE_URL}{path}"))
             .header(reqwest::header::AUTHORIZATION, self.api_key.clone())
             .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en")
     }
 
     pub fn quota_request(&self) -> Result<reqwest::Request, GlmParseError> {
-        self.request("/api/monitor/usage/quota/limit")
-            .build()
-            .map_err(|_| GlmParseError::RequestFailed)
+        // Team Coding Plan credentials (organization id present) must query
+        // `?type=2` with bigmodel-organization/-project headers, or the
+        // official API answers "当前用户不存在coding plan" even for a valid key.
+        let mut builder = if self.organization.is_some() {
+            self.request("/api/monitor/usage/quota/limit?type=2")
+        } else {
+            self.request("/api/monitor/usage/quota/limit")
+        };
+        if let Some(organization) = &self.organization {
+            builder = builder.header(
+                reqwest::header::HeaderName::from_static("bigmodel-organization"),
+                organization.clone(),
+            );
+        }
+        if let Some(project) = &self.project {
+            builder = builder.header(
+                reqwest::header::HeaderName::from_static("bigmodel-project"),
+                project.clone(),
+            );
+        }
+        builder.build().map_err(|_| GlmParseError::RequestFailed)
     }
 
     pub fn model_usage_request(
@@ -144,6 +170,57 @@ impl GlmClient {
             .await
             .map_err(|_| GlmParseError::RequestFailed)
     }
+}
+
+/// GLM credentials come in two shapes: the original bare Coding Plan key
+/// (personal plan, and every instance/backup created before team support), or
+/// a camelCase JSON object adding the team plan's organization / project ids.
+/// A non-empty organization id marks a team credential.
+fn parse_glm_credential(
+    credential: &str,
+) -> Result<(String, Option<String>, Option<String>), GlmParseError> {
+    let trimmed = credential.trim();
+    if !trimmed.starts_with('{') {
+        return Ok((trimmed.to_string(), None, None));
+    }
+    let parsed: GlmCredential =
+        serde_json::from_str(trimmed).map_err(|_| GlmParseError::InvalidCredential)?;
+    let organization = normalize_team_field(parsed.organization)?;
+    let project = normalize_team_field(parsed.project)?;
+    Ok((parsed.api_key, organization, project))
+}
+
+/// Trims an optional team field; empty means absent, and length stays inside
+/// what a request header can carry.
+fn normalize_team_field(value: Option<String>) -> Result<Option<String>, GlmParseError> {
+    let Some(value) = value else { return Ok(None) };
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > 128 {
+        return Err(GlmParseError::InvalidCredential);
+    }
+    Ok(Some(trimmed))
+}
+
+fn optional_header(value: Option<String>) -> Result<Option<reqwest::header::HeaderValue>, GlmParseError> {
+    value
+        .map(|text| {
+            reqwest::header::HeaderValue::from_str(&text)
+                .map_err(|_| GlmParseError::InvalidCredential)
+        })
+        .transpose()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GlmCredential {
+    api_key: String,
+    #[serde(default)]
+    organization: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
 }
 
 /// True when a rejected response blames a missing Coding Plan subscription.
@@ -720,6 +797,64 @@ mod tests {
         );
         assert!(request.headers()["authorization"].is_sensitive());
         assert_eq!(request.headers()["authorization"], "secret-key");
+    }
+
+    #[test]
+    fn builds_team_quota_request_with_organization_headers() {
+        // Team Coding Plan credentials (camelCase JSON with an organization
+        // id) switch the quota endpoint to `?type=2` and carry the
+        // bigmodel-organization/-project headers.
+        let credential = r#"{"apiKey":"secret-key","organization":"org-123","project":"proj-9"}"#;
+        let client = GlmClient::new(credential).expect("valid team credential");
+
+        let request = client.quota_request().expect("quota request");
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2"
+        );
+        assert_eq!(request.headers()["bigmodel-organization"], "org-123");
+        assert_eq!(request.headers()["bigmodel-project"], "proj-9");
+        assert!(request.headers()["authorization"].is_sensitive());
+        assert_eq!(request.headers()["authorization"], "secret-key");
+    }
+
+    #[test]
+    fn treats_bare_and_json_credentials_without_organization_as_personal() {
+        let bare = GlmClient::new("secret-key").expect("bare key stays valid");
+        let request = bare.quota_request().expect("quota request");
+        assert_eq!(
+            request.url().as_str(),
+            "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+        );
+        assert!(request.headers().get("bigmodel-organization").is_none());
+
+        // Empty optional fields serialize away, so a JSON credential without
+        // an organization behaves exactly like the personal bare key.
+        let json = GlmClient::new(r#"{"apiKey":"secret-key"}"#).expect("json credential");
+        let request = json.quota_request().expect("quota request");
+        assert_eq!(
+            request.url().as_str(),
+            "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+        );
+        assert!(request.headers().get("bigmodel-organization").is_none());
+        assert_eq!(request.headers()["authorization"], "secret-key");
+    }
+
+    #[test]
+    fn rejects_team_credentials_with_unknown_or_invalid_fields() {
+        assert_eq!(
+            GlmClient::new(r#"{"apiKey":"secret-key","unexpected":true}"#)
+                .expect_err("unknown fields must fail")
+                .code(),
+            "GLM_INVALID_CREDENTIAL"
+        );
+        assert_eq!(
+            GlmClient::new(r#"{"organization":"org-123"}"#)
+                .expect_err("missing api key must fail")
+                .code(),
+            "GLM_INVALID_CREDENTIAL"
+        );
     }
 
     #[test]

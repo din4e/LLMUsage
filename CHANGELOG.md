@@ -1,5 +1,15 @@
 # 更新日志
 
+## v0.1.13（未发布）
+
+- **新增三家供应商（合并自 sub2api 的平台用量拉取实现）**：
+  - **OpenCode Go**：`opencode.ai/zen/go` 订阅额度，滚动（5 小时）/周/月三档窗口、已用百分比与重置时间。
+  - **Grok 订阅（SuperGrok）**：浏览器 OAuth 授权后拉取周 Credits 用量与月度账单（月度 $150 / $1,500 自动识别 SuperGrok / SuperGrok Heavy），预付余额、按需上限与产品用量全展示；访问令牌临期自动刷新并回写。
+  - **Google Antigravity**：浏览器 Google 授权后自动识别项目，按模型展示额度窗口（已用 = 1 − remainingFraction）与套餐 AI Credits；生产域名不可用时回退 daily 域名。
+- **MiniMax 双端点**：优先使用新的 Coding Plan 端点（周额度百分比、套餐名、`current_weekly_status` 门槛），旧 Token Plan 端点保留为回退；仅取 `general`（编程套餐）条目，video 不再污染主指标。
+- **GLM 团队版 Coding Plan**：凭据表单新增可选「组织 ID / 项目 ID」，团队 Key 以 `?type=2` + `bigmodel-organization/-project` 头查询；个人版凭据保持原裸串格式，旧实例与备份完全兼容。
+- OAuth 授权走本机回环端口（xAI 56121 / Google 8085），授权码不经任何第三方；令牌由 Windows DPAPI 加密保存。
+
 ## v0.1.12（2026-10-09）
 
 - **完整备份升级为整段数据迁移**：导出的完整备份除明文 API Key 与实例备注外，现在还包含各实例的缓存摘要快照与整段本地用量历史；导入后仪表盘立即还原源设备的最后状态与全部趋势数据，不再显示「等待同步」或空白趋势。历史记录按导入时实际分配的实例 ID 重映射（含实例标签重写），未导入实例的历史不会混入；完整备份改为紧凑 JSON 序列化以容纳历史数据（文件上限提高到 10 MiB），状态报告仍为便于阅读的格式且不含历史。

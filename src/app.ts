@@ -886,6 +886,9 @@ function sourceLabel(snapshot: OnlineSnapshot) {
   if (snapshot.source === "official_prepaid_balance") return "xAI Management 预付余额";
   if (snapshot.source === "official_cloud_monitoring") return "Google Cloud Monitoring";
   if (snapshot.source === "official_prometheus_monitoring") return "百炼 Prometheus 监控";
+  if (snapshot.source === "official_opencode_usage") return "OpenCode 官方订阅用量";
+  if (snapshot.source === "grok_cli_billing") return "Grok 订阅账单";
+  if (snapshot.source === "antigravity_quota") return "Antigravity 模型额度";
   return "在线接口";
 }
 
@@ -1454,31 +1457,61 @@ function openProviderDialog(instanceId: string) {
     dialogTitle.textContent = `配置 ${instanceDisplayName(provider, instanceIndexOf(instanceId), instanceRemark(instanceId))}`;
   }
   if (dialogCopy) dialogCopy.textContent = provider.credentialHint;
-  credentialFields.replaceChildren(...provider.fields.map((field) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "credential-field";
-    const label = document.createElement("label");
-    label.htmlFor = `credential-${field.id}`;
-    label.textContent = field.label;
-    const input = document.createElement("input");
-    input.id = `credential-${field.id}`;
-    input.name = field.id;
-    input.type = field.type;
-    input.placeholder = field.placeholder;
-    input.setAttribute("autocomplete", field.autocomplete ?? "off");
-    input.spellcheck = false;
-    input.required = true;
-    input.addEventListener("input", () => input.setCustomValidity(""));
-    wrapper.append(label, input);
-    if (field.type === "password") {
-      input.classList.add("has-reveal");
-      wrapper.append(createRevealToggle(input, field.label));
-    }
-    return wrapper;
-  }));
+  if (provider.auth) {
+    // OAuth providers have no form fields: the submit button starts the
+    // system-browser authorization flow.
+    const note = document.createElement("p");
+    note.className = "credential-auth-note";
+    note.textContent =
+      "无需填写密钥。点击「授权并保存」后会打开系统浏览器，登录并允许后回到本窗口完成配置。";
+    credentialFields.replaceChildren(note);
+    if (saveButton) saveButton.textContent = "授权并保存";
+  } else {
+    credentialFields.replaceChildren(...provider.fields.map((field) => {
+      const wrapper = document.createElement("div");
+      wrapper.className = "credential-field";
+      const label = document.createElement("label");
+      label.htmlFor = `credential-${field.id}`;
+      label.textContent = field.label;
+      const input = document.createElement("input");
+      input.id = `credential-${field.id}`;
+      input.name = field.id;
+      input.type = field.type;
+      input.placeholder = field.placeholder;
+      input.setAttribute("autocomplete", field.autocomplete ?? "off");
+      input.spellcheck = false;
+      input.required = !field.optional;
+      input.addEventListener("input", () => input.setCustomValidity(""));
+      wrapper.append(label, input);
+      if (field.type === "password") {
+        input.classList.add("has-reveal");
+        wrapper.append(createRevealToggle(input, field.label));
+      }
+      return wrapper;
+    }));
+    if (saveButton) saveButton.textContent = "保存并同步";
+  }
   dialog?.showModal();
   credentialFields.querySelector<HTMLInputElement>("input")?.focus();
   void prefillCredentialFields(instanceId);
+}
+
+/**
+ * Runs the loopback OAuth flow for a subscription provider: starts the
+ * listener, opens the system browser, and blocks until the authorization
+ * code lands on the loopback port. Returns the minted credential string for
+ * the normal configure command.
+ */
+async function runProviderAuthorization(providerId: string): Promise<string> {
+  const start = await invoke<{ url: string }>("begin_provider_authorization", {
+    provider: baseProviderId(providerId),
+  });
+  await invoke("open_authorization_url", { url: start.url });
+  setStatus("请在系统浏览器中完成授权…");
+  const outcome = await invoke<{ providerId: string; credential: string }>(
+    "complete_provider_authorization",
+  );
+  return outcome.credential;
 }
 
 /** Eye toggle that reveals a (possibly stored) secret field in the dialog. */
@@ -1535,13 +1568,20 @@ providerForm?.addEventListener("submit", async (event) => {
     dialog?.close();
     return;
   }
+  const isAuthorizationFlow = Boolean(providerDefinition(selectedInstance)?.auth);
+  const idleLabel = isAuthorizationFlow ? "授权并保存" : "保存并同步";
   saveButton.disabled = true;
-  saveButton.textContent = "验证中…";
+  saveButton.textContent = isAuthorizationFlow ? "启动授权…" : "验证中…";
   try {
-    const values = Object.fromEntries(
-      Array.from(credentialFields.querySelectorAll<HTMLInputElement>("input")).map((input) => [input.name, input.value]),
-    );
-    const credential = serializeProviderCredential(selectedInstance, values);
+    let credential: string;
+    if (isAuthorizationFlow) {
+      credential = await runProviderAuthorization(selectedInstance);
+    } else {
+      const values = Object.fromEntries(
+        Array.from(credentialFields.querySelectorAll<HTMLInputElement>("input")).map((input) => [input.name, input.value]),
+      );
+      credential = serializeProviderCredential(selectedInstance, values);
+    }
     if (baseProviderId(selectedInstance) === "glm") {
       const snapshot = await invoke<GlmSnapshot>("configure_glm", {
         providerId: selectedInstance,
@@ -1565,12 +1605,18 @@ providerForm?.addEventListener("submit", async (event) => {
     dialog?.close();
   } catch (reason) {
     const error = reason as CommandError;
+    const message = error?.message ?? (reason instanceof Error ? reason.message : "凭据验证失败");
     const firstInput = credentialFields.querySelector<HTMLInputElement>("input");
-    firstInput?.setCustomValidity(error.message ?? (reason instanceof Error ? reason.message : "凭据验证失败"));
-    firstInput?.reportValidity();
+    if (firstInput) {
+      firstInput.setCustomValidity(message);
+      firstInput.reportValidity();
+    } else {
+      // Authorization flows have no input to anchor the message to.
+      setStatus(message, "error");
+    }
   } finally {
     saveButton.disabled = false;
-    saveButton.textContent = "保存并同步";
+    saveButton.textContent = idleLabel;
   }
 });
 

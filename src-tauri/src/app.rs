@@ -203,7 +203,28 @@ impl CommandError {
     fn open_link_failed() -> Self {
         Self {
             code: "OPEN_LINK_FAILED",
-            message: "无法打开系统浏览器，请手动访问 GitHub 仓库",
+            message: "无法打开系统浏览器，请手动访问链接",
+        }
+    }
+
+    fn grok_subscription_provider() -> Self {
+        Self {
+            code: "GROK_SUBSCRIPTION_PROVIDER",
+            message: "Grok 订阅需要先在浏览器完成授权；授权过期时请删除实例后重新授权",
+        }
+    }
+
+    fn antigravity_provider() -> Self {
+        Self {
+            code: "ANTIGRAVITY_PROVIDER",
+            message: "Antigravity 需要先在浏览器完成 Google 授权；若账号需要验证或授权过期，请重新授权",
+        }
+    }
+
+    fn oauth(error: &llm_usage_core::oauth_flow::OAuthFlowError) -> Self {
+        Self {
+            code: error.code(),
+            message: error.message(),
         }
     }
 }
@@ -389,6 +410,12 @@ fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
         {
             CommandError::qwen_monitoring_provider()
         }
+        OnlineError::InvalidCredential if provider == OnlineProvider::GrokSubscription => {
+            CommandError::grok_subscription_provider()
+        }
+        OnlineError::InvalidCredential if provider == OnlineProvider::Antigravity => {
+            CommandError::antigravity_provider()
+        }
         OnlineError::InvalidCredential => CommandError::online_provider(),
         OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
             if provider == OnlineProvider::KimiCn =>
@@ -435,6 +462,16 @@ fn online_error(provider: OnlineProvider, error: OnlineError) -> CommandError {
             ) =>
         {
             CommandError::qwen_monitoring_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::GrokSubscription =>
+        {
+            CommandError::grok_subscription_provider()
+        }
+        OnlineError::InvalidJson | OnlineError::ApiRejected | OnlineError::SchemaMismatch
+            if provider == OnlineProvider::Antigravity =>
+        {
+            CommandError::antigravity_provider()
         }
         OnlineError::InvalidJson
         | OnlineError::ApiRejected
@@ -655,6 +692,17 @@ pub(crate) async fn sync_online_instance(
             SecretError::Missing => CommandError::not_configured(),
             _ => CommandError::credential(),
         })?;
+    // OAuth providers (Grok 订阅 / Antigravity) refresh their access tokens
+    // right before a sync; the rotated credential is written back to the
+    // vault so the next refresh keeps chaining from the latest token.
+    if let Some(refreshed) =
+        llm_usage_core::providers::online::refresh_provider_credential(instance.provider, &api_key)
+            .await
+    {
+        let _ = provider_vault(app, &instance.id)?.save(&refreshed);
+        api_key.zeroize();
+        api_key = refreshed;
+    }
     let client = match OnlineClient::new(instance.provider, &api_key) {
         Ok(client) => client,
         Err(error) => {
@@ -863,23 +911,84 @@ pub fn import_provider_backup(
 /// into a generic "open arbitrary URL" primitive.
 #[tauri::command(rename_all = "camelCase")]
 pub fn open_project_repository() -> Result<(), CommandError> {
-    const REPOSITORY_URL: &str = "https://github.com/din4e/LLMUsage";
+    open_url_in_system_browser("https://github.com/din4e/LLMUsage")
+}
+
+/// The authorize URL handed to the system browser by
+/// `begin_provider_authorization`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizationStart {
+    pub url: String,
+}
+
+/// The minted OAuth credential returned to the WebView; the frontend feeds it
+/// straight into `configure_online_provider`, which validates it with a real
+/// upstream fetch before anything is persisted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizationCredential {
+    pub provider_id: String,
+    pub credential: String,
+}
+
+/// Starts a loopback OAuth flow: binds the fixed loopback port and returns
+/// the authorize URL. No network traffic happens here.
+#[tauri::command(rename_all = "camelCase")]
+pub fn begin_provider_authorization(provider: String) -> Result<AuthorizationStart, CommandError> {
+    let provider = llm_usage_core::oauth_flow::OAuthProvider::from_id(&provider)
+        .ok_or_else(CommandError::invalid_provider)?;
+    let url = llm_usage_core::oauth_flow::begin(provider)
+        .map_err(|error| CommandError::oauth(&error))?;
+    Ok(AuthorizationStart { url })
+}
+
+/// Waits for the browser callback and exchanges the code for tokens. The
+/// command blocks until the loopback callback lands (or times out).
+#[tauri::command(rename_all = "camelCase")]
+pub async fn complete_provider_authorization() -> Result<AuthorizationCredential, CommandError> {
+    let (provider, credential) = llm_usage_core::oauth_flow::complete()
+        .await
+        .map_err(|error| CommandError::oauth(&error))?;
+    Ok(AuthorizationCredential {
+        provider_id: provider.id().to_string(),
+        credential,
+    })
+}
+
+/// Opens an OAuth authorize URL in the system browser. Only the OAuth
+/// frontends of the supported subscription providers are allowed — the same
+/// "no arbitrary URL" rule as `open_project_repository`.
+#[tauri::command(rename_all = "camelCase")]
+pub fn open_authorization_url(url: String) -> Result<(), CommandError> {
+    let parsed = reqwest::Url::parse(&url).map_err(|_| CommandError::open_link_failed())?;
+    let allowed = parsed.scheme() == "https"
+        && parsed
+            .host_str()
+            .is_some_and(|host| host == "auth.x.ai" || host == "accounts.google.com");
+    if !allowed {
+        return Err(CommandError::open_link_failed());
+    }
+    open_url_in_system_browser(parsed.as_str())
+}
+
+fn open_url_in_system_browser(url: &str) -> Result<(), CommandError> {
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = std::process::Command::new("rundll32");
-        command.arg("url.dll,FileProtocolHandler").arg(REPOSITORY_URL);
+        command.arg("url.dll,FileProtocolHandler").arg(url);
         command
     };
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("open");
-        command.arg(REPOSITORY_URL);
+        command.arg(url);
         command
     };
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
-        command.arg(REPOSITORY_URL);
+        command.arg(url);
         command
     };
     command

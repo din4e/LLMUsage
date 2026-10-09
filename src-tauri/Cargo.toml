@@ -21,8 +21,13 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 zeroize = "1"
+# OAuth loopback flows (PKCE S256 + device-safe randomness) for the
+# subscription providers (Grok / Antigravity).
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
 
 # Windows: DPAPI secret storage (crypt32.dll loaded dynamically).
 [target.'cfg(target_os = "windows")'.dependencies]
