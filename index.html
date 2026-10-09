@@ -167,6 +167,7 @@
           <p class="eyebrow">LOCAL · PRIVATE · LIVE</p>
           <h2>本地、私密、实时的 LLM 用量仪表盘</h2>
           <p class="about-copy">在一个桌面窗口里集中查看各家大模型供应商的今日用量、每日趋势、套餐额度、余额、成本估算与冷却时间。凭据仅保存在本机，按需直接请求供应商官方接口，不经过任何第三方服务器。</p>
+          <p class="about-repo">源码与版本发布：<a href="https://github.com/din4e/LLMUsage" data-action="open-repo" rel="noopener">github.com/din4e/LLMUsage</a></p>
 
           <div class="about-grid" aria-label="应用信息">
             <article class="about-fact"><span>当前版本</span><strong id="app-version-detail">0.1.11</strong><small>由 Tauri 配置提供</small></article>
@@ -265,7 +266,7 @@
 
     <dialog id="export-dialog" aria-labelledby="export-title">
       <div class="dialog-heading"><div><p class="eyebrow">EXPORT</p><h2 id="export-title">导出配置</h2></div><button type="button" class="close-button" data-action="close-export-dialog" aria-label="关闭">×</button></div>
-      <p class="dialog-copy">完整备份包含明文 API Key 与实例备注，仅用于本机备份或迁移，请妥善保管导出文件；状态报告只含各实例的剩余额度与余额信息，可以安全分享。</p>
+      <p class="dialog-copy">完整备份包含明文 API Key、实例备注、缓存摘要与整段用量历史，可完整迁移到另一台设备；状态报告只含各实例的剩余额度与余额信息，可以安全分享。</p>
       <div class="export-options">
         <button type="button" class="refresh-button" data-action="choose-export-full">导出完整备份（含密钥）</button>
         <button type="button" class="secondary-button" data-action="choose-export-status">导出状态报告（不含密钥）</button>

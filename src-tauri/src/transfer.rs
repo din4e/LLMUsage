@@ -1,5 +1,11 @@
 //! Batch import/export of provider credentials with remaining-status info.
 //!
+//! Full backups are a complete migration unit: every decrypted credential,
+//! each instance's verbatim cached snapshot, and the whole daily usage
+//! history travel together, so an import restores the exact dashboard and
+//! trend data the source machine showed. Status reports stay the lean,
+//! shareable shape (normalized status blocks, no credentials, no history).
+//!
 //! All logic here is pure with respect to Tauri: it operates on plain data
 //! and `&Path`s so the payload assembly, parsing, id allocation, and import
 //! application can be unit-tested without an app handle. Credentials are
@@ -12,13 +18,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cache::CachedSnapshot;
+use crate::cache::{CachedSnapshot, DailyUsageHistory, DailyUsageRecord, SnapshotCache};
 use crate::providers::glm::GlmClient;
 use crate::providers::online::{split_instance_suffix, OnlineClient, OnlineProvider};
 use crate::secret::{registry_ids, SecretVault};
 
 pub const TRANSFER_FORMAT_VERSION: u32 = 1;
-const MAX_TRANSFER_FILE_BYTES: usize = 2 * 1024 * 1024;
+/// Full backups embed the whole daily usage history, which `MAX_HISTORY_BYTES`
+/// caps at 8 MiB compact on the source machine; the transfer cap leaves room
+/// for credentials and snapshots on top.
+const MAX_TRANSFER_FILE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TRANSFER_INSTANCES: usize = 200;
 /// Mirrors the frontend `INSTANCE_REMARK_MAX_LENGTH` (src/providers.ts).
 const REMARK_MAX_CHARS: usize = 24;
@@ -41,6 +50,11 @@ pub struct TransferPayload {
     pub mode: TransferMode,
     pub exported_at_ms: i64,
     pub instances: Vec<TransferInstance>,
+    /// Daily usage history for the exported instances, keyed by their source
+    /// instance ids. Full backups only; import remaps the ids onto the
+    /// freshly assigned local ones. Absent (empty) in older files.
+    #[serde(default)]
+    pub history: Vec<DailyUsageRecord>,
 }
 
 /// One configured instance inside a transfer file. `credential` is the exact
@@ -56,6 +70,22 @@ pub struct TransferInstance {
     pub credential: Option<String>,
     #[serde(default)]
     pub status: Option<TransferStatus>,
+    /// Verbatim cached snapshot from the source machine (full backups only).
+    /// Import restores it into the local snapshot cache so the dashboard
+    /// shows the last-known state immediately instead of "等待同步".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<TransferSnapshot>,
+}
+
+/// The raw cached snapshot that travels inside a full backup: the exact
+/// `CachedSnapshot` payload plus its capture time, so a restored row renders
+/// — and reports its freshness — exactly as it did on the source machine.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSnapshot {
+    pub kind: String,
+    pub saved_at_ms: i64,
+    pub snapshot: Value,
 }
 
 /// Remaining-status snapshot lifted out of the cached provider snapshot.
@@ -100,6 +130,7 @@ pub enum TransferFileError {
 #[serde(rename_all = "camelCase")]
 pub struct ExportSummary {
     pub instance_count: usize,
+    pub history_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +141,15 @@ pub struct ImportEntryResult {
     pub remark: Option<String>,
     pub outcome: &'static str,
     pub reason: Option<&'static str>,
+}
+
+/// Result of applying a whole transfer file: per-entry outcomes plus how many
+/// history records were merged into the local daily usage file.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOutcome {
+    pub entries: Vec<ImportEntryResult>,
+    pub history_merged: usize,
 }
 
 /// Maps a credential file stem to its base provider id and instance index.
@@ -204,15 +244,19 @@ fn string_field(snapshot: &Value, key: &str) -> Option<String> {
 
 /// Assembles the export payload. `credentials` is pre-loaded by the caller;
 /// a missing entry (e.g. corrupt DPAPI file) exports without the credential
-/// rather than failing the whole backup.
+/// rather than failing the whole backup. Full mode embeds each instance's
+/// verbatim cached snapshot plus the shared usage history; status mode
+/// exports the normalized, shareable status blocks only.
 pub fn assemble_payload(
     mode: TransferMode,
     remarks: &BTreeMap<String, String>,
     instances: &[String],
     snapshots: &[CachedSnapshot],
     credentials: &BTreeMap<String, String>,
+    history: &[DailyUsageRecord],
     exported_at_ms: i64,
 ) -> TransferPayload {
+    let exported: HashSet<&str> = instances.iter().map(String::as_str).collect();
     let entries = instances
         .iter()
         .map(|instance_id| {
@@ -226,24 +270,68 @@ pub fn assemble_payload(
             } else {
                 None
             };
-            let status = snapshots
+            let cached = snapshots
                 .iter()
-                .find(|cached| cached.provider_id == *instance_id)
-                .map(|cached| normalize_status(&cached.kind, &cached.snapshot, cached.saved_at_ms));
+                .find(|cached| cached.provider_id == *instance_id);
+            let (snapshot, status) = match cached {
+                Some(cached) => match mode {
+                    TransferMode::Full => (
+                        Some(TransferSnapshot {
+                            kind: cached.kind.clone(),
+                            saved_at_ms: cached.saved_at_ms,
+                            snapshot: cached.snapshot.clone(),
+                        }),
+                        None,
+                    ),
+                    TransferMode::Status => (
+                        None,
+                        Some(normalize_status(
+                            &cached.kind,
+                            &cached.snapshot,
+                            cached.saved_at_ms,
+                        )),
+                    ),
+                },
+                None => (None, None),
+            };
             TransferInstance {
                 provider_id: instance_id.clone(),
                 remark,
                 credential,
                 status,
+                snapshot,
             }
         })
         .collect();
+    let history = if mode == TransferMode::Full {
+        history
+            .iter()
+            .filter(|record| exported.contains(record.provider_id.as_str()))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     TransferPayload {
         version: TRANSFER_FORMAT_VERSION,
         mode,
         exported_at_ms,
         instances: entries,
+        history,
     }
+}
+
+/// Serializes the payload for disk. Full backups carry the whole usage
+/// history, so they serialize compact to stay well inside the transfer size
+/// cap; status reports stay pretty-printed for humans.
+pub fn encode_transfer_file(payload: &TransferPayload) -> Result<Vec<u8>, TransferFileError> {
+    let mut bytes = match payload.mode {
+        TransferMode::Full => serde_json::to_vec(payload),
+        TransferMode::Status => serde_json::to_vec_pretty(payload),
+    }
+    .map_err(|_| TransferFileError::Malformed)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 /// Reads transfer-file bytes (BOM tolerated), enforces size and instance
@@ -327,21 +415,34 @@ pub fn validate_credential(base: &str, credential: &str) -> bool {
 }
 
 /// Applies a parsed transfer file: saves each importable credential into the
-/// vault under a non-colliding instance id and reports the per-entry outcome.
-/// Never overwrites an existing instance and never touches the snapshot
-/// cache, daily history, or any log. The returned results carry no
-/// credential bytes.
+/// vault under a non-colliding instance id, restores the transferred
+/// snapshots into the local cache, and merges the remapped usage history.
+/// A credential that already exists locally under another instance of the
+/// same provider is skipped so re-importing a backup cannot duplicate the
+/// account or double-count its history. Existing instances are never
+/// overwritten, and the returned results carry no credential bytes.
 pub fn apply_import(
     payload: &TransferPayload,
     app_data: &Path,
     existing: &[String],
-) -> Vec<ImportEntryResult> {
+) -> ImportOutcome {
     let mut taken: HashSet<String> = existing.iter().cloned().collect();
-    payload
-        .instances
-        .iter()
-        .map(|entry| import_entry(payload.mode, entry, app_data, &mut taken))
-        .collect()
+    let mut entries = Vec::with_capacity(payload.instances.len());
+    let mut assigned_by_source: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &payload.instances {
+        let result = import_entry(payload.mode, entry, app_data, &mut taken);
+        if result.outcome == "saved" {
+            if let Some(assigned) = result.assigned_instance_id.as_ref() {
+                assigned_by_source.insert(entry.provider_id.clone(), assigned.clone());
+            }
+        }
+        entries.push(result);
+    }
+    let history_merged = merge_import_history(payload, app_data, &assigned_by_source);
+    ImportOutcome {
+        entries,
+        history_merged,
+    }
 }
 
 fn import_entry(
@@ -387,6 +488,15 @@ fn import_entry(
             reason: Some("凭据格式无效"),
         };
     }
+    if credential_exists_locally(&base, credential, app_data, taken) {
+        return ImportEntryResult {
+            source_provider_id: entry.provider_id.clone(),
+            assigned_instance_id: None,
+            remark,
+            outcome: "skipped",
+            reason: Some("本机已存在相同密钥的实例"),
+        };
+    }
     let Some(assigned) = assign_instance_id(&entry.provider_id, taken) else {
         return ImportEntryResult {
             source_provider_id: entry.provider_id.clone(),
@@ -399,13 +509,18 @@ fn import_entry(
     let saved = SecretVault::new(app_data, &assigned)
         .and_then(|vault| vault.save(credential));
     match saved {
-        Ok(()) => ImportEntryResult {
-            source_provider_id: entry.provider_id.clone(),
-            assigned_instance_id: Some(assigned),
-            remark,
-            outcome: "saved",
-            reason: None,
-        },
+        Ok(()) => {
+            if let Some(snapshot) = entry.snapshot.as_ref() {
+                restore_snapshot(&assigned, snapshot, app_data);
+            }
+            ImportEntryResult {
+                source_provider_id: entry.provider_id.clone(),
+                assigned_instance_id: Some(assigned),
+                remark,
+                outcome: "saved",
+                reason: None,
+            }
+        }
         Err(_) => ImportEntryResult {
             source_provider_id: entry.provider_id.clone(),
             assigned_instance_id: None,
@@ -414,6 +529,106 @@ fn import_entry(
             reason: Some("本机凭据存储不可用"),
         },
     }
+}
+
+/// Whether an instance of the same provider already stores this exact
+/// credential. The comparison stays in-process and is never logged; vaults
+/// that cannot be read are treated as non-matches so a corrupt store cannot
+/// block the import.
+fn credential_exists_locally(
+    base: &str,
+    credential: &str,
+    app_data: &Path,
+    taken: &HashSet<String>,
+) -> bool {
+    taken.iter().any(|existing| {
+        credential_instance(existing)
+            .is_some_and(|(existing_base, _)| existing_base == base)
+            && SecretVault::new(app_data, existing)
+                .and_then(|vault| vault.load())
+                .is_ok_and(|stored| stored == credential)
+    })
+}
+
+/// Writes a transferred snapshot into the local cache under the assigned
+/// instance id, relabeling the online identity fields so the row renders
+/// exactly as it did on the source machine. Best effort: a failed restore
+/// never fails the credential import — the next sync rebuilds the cache.
+fn restore_snapshot(assigned: &str, snapshot: &TransferSnapshot, app_data: &Path) {
+    if (snapshot.kind != "glm" && snapshot.kind != "online") || !snapshot.snapshot.is_object() {
+        return;
+    }
+    let mut value = snapshot.snapshot.clone();
+    if snapshot.kind == "online" {
+        relabel_online_snapshot(&mut value, assigned);
+    }
+    let _ = SnapshotCache::new(app_data).restore(
+        assigned,
+        &snapshot.kind,
+        value,
+        snapshot.saved_at_ms,
+    );
+}
+
+/// Stamps an online snapshot with the assigned instance identity, mirroring
+/// `apply_instance_identity` in app.rs: `providerId` follows the assigned id
+/// and the label's instance suffix is rewritten for the new index.
+fn relabel_online_snapshot(snapshot: &mut Value, assigned_id: &str) {
+    let (_, index) = split_instance_suffix(assigned_id).unwrap_or((assigned_id, 1));
+    let Some(object) = snapshot.as_object_mut() else {
+        return;
+    };
+    object.insert("providerId".to_string(), Value::String(assigned_id.to_string()));
+    if let Some(Value::String(label)) = object.get("label") {
+        let relabeled = if index >= 2 {
+            format!("{} · 实例 {index}", strip_instance_suffix_label(label))
+        } else {
+            strip_instance_suffix_label(label)
+        };
+        object.insert("label".to_string(), Value::String(relabeled));
+    }
+}
+
+/// Drops a trailing "· 实例 N" from a source label so the assigned index can
+/// be stamped cleanly.
+fn strip_instance_suffix_label(label: &str) -> String {
+    match label.rsplit_once(" · 实例 ") {
+        Some((prefix, suffix)) if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) => {
+            prefix.to_string()
+        }
+        _ => label.to_string(),
+    }
+}
+
+/// Remaps the transfer history onto the assigned instance ids and merges it
+/// into the local daily history. Records for sources that were not imported
+/// (skipped, invalid, or plain unknown ids) are dropped so ghost instances
+/// never pollute the trend charts. Best effort: a failed merge never fails
+/// the import — the credentials are already saved at this point.
+fn merge_import_history(
+    payload: &TransferPayload,
+    app_data: &Path,
+    assigned_by_source: &BTreeMap<String, String>,
+) -> usize {
+    if payload.mode != TransferMode::Full
+        || payload.history.is_empty()
+        || assigned_by_source.is_empty()
+    {
+        return 0;
+    }
+    let remapped: Vec<DailyUsageRecord> = payload
+        .history
+        .iter()
+        .filter_map(|record| {
+            let assigned = assigned_by_source.get(&record.provider_id)?;
+            let mut record = record.clone();
+            record.provider_id = assigned.clone();
+            Some(record)
+        })
+        .collect();
+    DailyUsageHistory::new(app_data)
+        .merge(remapped)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -442,11 +657,29 @@ mod tests {
         })
     }
 
+    fn daily(date: &str, minute: Option<i16>, provider_id: &str, tokens: u64) -> DailyUsageRecord {
+        DailyUsageRecord {
+            date: date.to_string(),
+            slot: None,
+            minute,
+            provider_id: provider_id.to_string(),
+            requests: Some(1),
+            total_tokens: Some(tokens),
+            estimated_cost_cny: None,
+            balance_cny: None,
+        }
+    }
+
     #[test]
-    fn assembles_full_backup_with_credentials_and_remarks() {
+    fn assembles_full_backup_with_credentials_remarks_and_history() {
         let remarks = BTreeMap::from([("kimi_cn_2".to_string(), "工作账号".to_string())]);
         let snapshots = vec![cached("kimi_cn_2", "online", online_snapshot())];
         let credentials = BTreeMap::from([("kimi_cn_2".to_string(), "sk-kimi-key".to_string())]);
+        let history = vec![
+            daily("2026-10-07", Some(10), "kimi_cn_2", 1_000),
+            // History for an instance that is not exported must not travel.
+            daily("2026-10-07", Some(10), "glm", 5_000),
+        ];
 
         let payload = assemble_payload(
             TransferMode::Full,
@@ -454,6 +687,7 @@ mod tests {
             &["kimi_cn_2".to_string()],
             &snapshots,
             &credentials,
+            &history,
             1_755_648_000_000,
         );
 
@@ -462,16 +696,21 @@ mod tests {
         let entry = &payload.instances[0];
         assert_eq!(entry.remark.as_deref(), Some("工作账号"));
         assert_eq!(entry.credential.as_deref(), Some("sk-kimi-key"));
-        let status = entry.status.as_ref().expect("status present");
-        assert_eq!(status.kind, "online");
-        assert_eq!(status.primary_value.as_deref(), Some("82.0%"));
-        assert_eq!(status.balance_cny, Some(64.2));
-        assert_eq!(status.saved_at_ms, 1_787_194_023_645);
+        // Full mode embeds the verbatim snapshot, not the normalized block.
+        let snapshot = entry.snapshot.as_ref().expect("verbatim snapshot");
+        assert_eq!(snapshot.kind, "online");
+        assert_eq!(snapshot.saved_at_ms, 1_787_194_023_645);
+        assert_eq!(snapshot.snapshot["primaryValue"], "82.0%");
+        assert_eq!(snapshot.snapshot["balanceCny"], 64.2);
+        assert!(entry.status.is_none());
+        assert_eq!(payload.history.len(), 1);
+        assert_eq!(payload.history[0].provider_id, "kimi_cn_2");
     }
 
     #[test]
     fn status_mode_never_serializes_a_credential_key() {
         let credentials = BTreeMap::from([("deepseek".to_string(), "sk-deep".to_string())]);
+        let history = vec![daily("2026-10-07", Some(10), "deepseek", 1_000)];
 
         let payload = assemble_payload(
             TransferMode::Status,
@@ -479,6 +718,7 @@ mod tests {
             &["deepseek".to_string()],
             &[],
             &credentials,
+            &history,
             0,
         );
         let text = serde_json::to_string(&payload).expect("serialize");
@@ -486,6 +726,31 @@ mod tests {
         assert!(!text.contains("credential"));
         assert!(!text.contains("sk-deep"));
         assert!(payload.instances[0].credential.is_none());
+        assert!(payload.instances[0].snapshot.is_none());
+        // Status reports are shareable: no usage history travels either.
+        assert!(payload.history.is_empty());
+    }
+
+    #[test]
+    fn status_mode_keeps_the_normalized_snapshot_block() {
+        let snapshots = vec![cached("kimi_cn", "online", online_snapshot())];
+
+        let payload = assemble_payload(
+            TransferMode::Status,
+            &BTreeMap::new(),
+            &["kimi_cn".to_string()],
+            &snapshots,
+            &BTreeMap::new(),
+            &[],
+            0,
+        );
+
+        let entry = &payload.instances[0];
+        assert!(entry.snapshot.is_none());
+        let status = entry.status.as_ref().expect("normalized status present");
+        assert_eq!(status.kind, "online");
+        assert_eq!(status.primary_value.as_deref(), Some("82.0%"));
+        assert_eq!(status.balance_cny, Some(64.2));
     }
 
     #[test]
@@ -496,10 +761,41 @@ mod tests {
             &["deepseek".to_string()],
             &[],
             &BTreeMap::new(),
+            &[],
             0,
         );
 
         assert!(payload.instances[0].status.is_none());
+    }
+
+    #[test]
+    fn encodes_full_backups_compact_and_status_reports_pretty() {
+        let full = assemble_payload(
+            TransferMode::Full,
+            &BTreeMap::new(),
+            &["glm".to_string()],
+            &[],
+            &BTreeMap::new(),
+            &[daily("2026-10-07", Some(10), "glm", 1_000)],
+            0,
+        );
+        let bytes = encode_transfer_file(&full).expect("encode full");
+        assert!(!String::from_utf8_lossy(&bytes).contains("\n  "));
+        let parsed = parse_transfer_file(&bytes).expect("round-trip full");
+        assert_eq!(parsed.mode, TransferMode::Full);
+        assert_eq!(parsed.history.len(), 1);
+
+        let status = assemble_payload(
+            TransferMode::Status,
+            &BTreeMap::new(),
+            &["glm".to_string()],
+            &[],
+            &BTreeMap::new(),
+            &[],
+            0,
+        );
+        let bytes = encode_transfer_file(&status).expect("encode status");
+        assert!(String::from_utf8_lossy(&bytes).contains("\n  "));
     }
 
     #[test]
@@ -700,7 +996,7 @@ mod tests {
         )
         .expect("fixture");
 
-        let results = apply_import(&payload, &dir, &enumerate_instances(&dir));
+        let results = &apply_import(&payload, &dir, &enumerate_instances(&dir)).entries;
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].outcome, "saved");
@@ -742,12 +1038,170 @@ mod tests {
         )
         .expect("fixture");
 
-        let results = apply_import(&payload, &dir, &[]);
+        let results = &apply_import(&payload, &dir, &[]).entries;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].outcome, "skipped");
         assert_eq!(results[0].reason, Some("状态报告不含凭据"));
         assert_eq!(results[0].assigned_instance_id, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skips_credentials_that_already_exist_locally() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-transfer-duplicate-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("credentials")).expect("create temp dir");
+        // The same key is already configured under the bare instance id.
+        SecretVault::new(&dir, "kimi_cn")
+            .expect("vault")
+            .save("sk-kimi-same")
+            .expect("seed vault");
+
+        let payload: TransferPayload = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "mode": "full",
+              "exportedAtMs": 0,
+              "instances": [
+                {"providerId": "kimi_cn_3", "credential": "sk-kimi-same"}
+              ],
+              "history": [
+                {"date": "2026-10-07", "minute": 10, "providerId": "kimi_cn_3",
+                 "requests": 1, "totalTokens": 100}
+              ]
+            }"#,
+        )
+        .expect("fixture");
+
+        let outcome = apply_import(&payload, &dir, &enumerate_instances(&dir));
+
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].outcome, "skipped");
+        assert_eq!(outcome.entries[0].reason, Some("本机已存在相同密钥的实例"));
+        assert_eq!(outcome.entries[0].assigned_instance_id, None);
+        // No duplicate instance was created and its history was not merged,
+        // so re-importing a backup can never double-count usage.
+        assert_eq!(outcome.history_merged, 0);
+        assert!(enumerate_instances(&dir) == vec!["kimi_cn"]);
+        assert!(DailyUsageHistory::new(&dir)
+            .load()
+            .expect("history")
+            .is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restores_snapshots_under_the_assigned_id_with_relabeling() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-transfer-restore-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("credentials")).expect("create temp dir");
+        // Seed the bare id with a different key so the import lands on _2.
+        SecretVault::new(&dir, "kimi_cn")
+            .expect("vault")
+            .save("sk-kimi-existing")
+            .expect("seed vault");
+
+        let payload: TransferPayload = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "mode": "full",
+              "exportedAtMs": 0,
+              "instances": [
+                {"providerId": "kimi_cn", "credential": "sk-kimi-o21Abc",
+                 "snapshot": {
+                   "kind": "online",
+                   "savedAtMs": 1234,
+                   "snapshot": {
+                     "providerId": "kimi_cn",
+                     "label": "Kimi Code · 实例 3",
+                     "primaryValue": "82.0%"
+                   }
+                 }}
+              ]
+            }"#,
+        )
+        .expect("fixture");
+
+        let outcome = apply_import(&payload, &dir, &enumerate_instances(&dir));
+
+        assert_eq!(outcome.entries[0].outcome, "saved");
+        assert_eq!(
+            outcome.entries[0].assigned_instance_id.as_deref(),
+            Some("kimi_cn_2")
+        );
+        let snapshots = SnapshotCache::new(&dir).load_all().expect("restored cache");
+        assert_eq!(snapshots.len(), 1);
+        let restored = &snapshots[0];
+        assert_eq!(restored.provider_id, "kimi_cn_2");
+        assert_eq!(restored.kind, "online");
+        // The capture time travels with the snapshot, not the import time.
+        assert_eq!(restored.saved_at_ms, 1234);
+        assert_eq!(restored.snapshot["providerId"], "kimi_cn_2");
+        // The source instance suffix is rewritten for the assigned index.
+        assert_eq!(restored.snapshot["label"], "Kimi Code · 实例 2");
+        assert_eq!(restored.snapshot["primaryValue"], "82.0%");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merges_history_onto_assigned_ids_and_drops_ghost_records() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm-usage-transfer-history-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("credentials")).expect("create temp dir");
+
+        let payload: TransferPayload = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "mode": "full",
+              "exportedAtMs": 0,
+              "instances": [
+                {"providerId": "kimi_cn", "credential": "sk-kimi-o21Abc"}
+              ],
+              "history": [
+                {"date": "2026-10-07", "minute": 10, "providerId": "kimi_cn",
+                 "requests": 1, "totalTokens": 100},
+                {"date": "2026-10-07", "minute": 11, "providerId": "kimi_cn",
+                 "requests": 2, "totalTokens": 200},
+                {"date": "2026-10-07", "minute": 10, "providerId": "kimi_cn",
+                 "requests": 3, "totalTokens": 300},
+                {"date": "2026-10-07", "minute": 10, "providerId": "glm",
+                 "requests": 9, "totalTokens": 900},
+                {"date": "2026-10-07", "minute": 10, "providerId": "unknown_provider",
+                 "requests": 9, "totalTokens": 900}
+              ]
+            }"#,
+        )
+        .expect("fixture");
+
+        let outcome = apply_import(&payload, &dir, &[]);
+
+        assert_eq!(outcome.entries[0].outcome, "saved");
+        // The within-batch duplicate key (minute 10) keeps the last record;
+        // records for sources that were not imported are dropped.
+        assert_eq!(outcome.history_merged, 2);
+        let records = DailyUsageHistory::new(&dir).load().expect("merged history");
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.provider_id == "kimi_cn"));
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.minute == Some(10))
+                .and_then(|record| record.total_tokens),
+            Some(300)
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

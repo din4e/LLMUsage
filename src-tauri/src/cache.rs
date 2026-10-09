@@ -96,24 +96,110 @@ impl DailyUsageHistory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let today = record.date.clone();
-        let mut records = match self.load() {
-            Ok(records) => records,
-            // A corrupt or oversized history file must not brick every future
-            // sync: quarantine it for forensics and restart from the incoming
-            // record. Only content failures self-heal; IO errors stay errors.
-            Err(CacheError::Json | CacheError::Invalid) => {
-                quarantine_file(&self.path).map_err(|_| CacheError::Io)?;
-                Vec::new()
-            }
-            Err(error) => return Err(error),
-        };
+        let mut records = self.load_or_quarantine()?;
         records.retain(|existing| {
             existing.date != record.date
                 || existing.minute_of_day() != record.minute_of_day()
                 || existing.provider_id != record.provider_id
         });
         records.push(record);
-        rollup_expired_records(&mut records, &today);
+        self.write_records(&mut records, &today)
+    }
+
+    /// Batch merge for transfer import. Incoming records are validated and
+    /// deduped among themselves (last wins, mirroring `upsert`), then folded
+    /// into the existing file under the same write lock. The merged file must
+    /// respect `MAX_HISTORY_BYTES` — an oversized file is quarantined by the
+    /// next write, not repaired — so when the combination would not fit, the
+    /// oldest incoming records are dropped first; existing records are never
+    /// dropped by an import. Returns how many incoming records were merged.
+    pub fn merge(&self, incoming: Vec<DailyUsageRecord>) -> Result<usize, CacheError> {
+        let mut incoming: Vec<DailyUsageRecord> =
+            incoming.into_iter().filter(is_valid_daily_record).collect();
+        if incoming.is_empty() {
+            return Ok(0);
+        }
+        let _guard = DAILY_USAGE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut records = self.load_or_quarantine()?;
+        // Within-batch dedupe: same (date, minute, provider) keeps the last.
+        let mut batch: Vec<DailyUsageRecord> = Vec::with_capacity(incoming.len());
+        for record in incoming.drain(..) {
+            batch.retain(|existing| {
+                existing.date != record.date
+                    || existing.minute_of_day() != record.minute_of_day()
+                    || existing.provider_id != record.provider_id
+            });
+            batch.push(record);
+        }
+        batch.sort_by(|left, right| {
+            left.date
+                .cmp(&right.date)
+                .then(left.minute_of_day().cmp(&right.minute_of_day()))
+                .then(left.provider_id.cmp(&right.provider_id))
+        });
+        // Size budget: the ascending sort makes draining from the front drop
+        // the oldest records, which are the least valuable for trends.
+        while !batch.is_empty() {
+            let mut candidate = records.clone();
+            candidate.extend(batch.iter().cloned());
+            let fits = serde_json::to_vec(&candidate)
+                .map(|bytes| bytes.len() <= MAX_HISTORY_BYTES)
+                .unwrap_or(false);
+            if fits {
+                break;
+            }
+            let drop = (batch.len() / 10).max(1);
+            batch.drain(..drop);
+        }
+        let merged = batch.len();
+        if merged == 0 {
+            return Ok(0);
+        }
+        let keys: std::collections::HashSet<(String, i32, String)> = batch
+            .iter()
+            .map(|record| {
+                (
+                    record.date.clone(),
+                    record.minute_of_day(),
+                    record.provider_id.clone(),
+                )
+            })
+            .collect();
+        records.retain(|existing| {
+            !keys.contains(&(
+                existing.date.clone(),
+                existing.minute_of_day(),
+                existing.provider_id.clone(),
+            ))
+        });
+        records.extend(batch);
+        let today = newest_date(&records).to_string();
+        self.write_records(&mut records, &today).map(|()| merged)
+    }
+
+    /// Loads the history, quarantining an unreadable file so a corrupt or
+    /// oversized store self-heals instead of failing every future write. Only
+    /// content failures self-heal; IO errors stay errors.
+    fn load_or_quarantine(&self) -> Result<Vec<DailyUsageRecord>, CacheError> {
+        match self.load() {
+            Ok(records) => Ok(records),
+            Err(CacheError::Json | CacheError::Invalid) => {
+                quarantine_file(&self.path).map_err(|_| CacheError::Io)?;
+                Ok(Vec::new())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Rolls up, sorts, and atomically writes the full record set.
+    fn write_records(
+        &self,
+        records: &mut Vec<DailyUsageRecord>,
+        today: &str,
+    ) -> Result<(), CacheError> {
+        rollup_expired_records(records, today);
         records.sort_by(|left, right| {
             left.date
                 .cmp(&right.date)
@@ -122,7 +208,7 @@ impl DailyUsageHistory {
         });
         let parent = self.path.parent().ok_or(CacheError::Invalid)?;
         std::fs::create_dir_all(parent).map_err(|_| CacheError::Io)?;
-        let bytes = serde_json::to_vec(&records).map_err(|_| CacheError::Json)?;
+        let bytes = serde_json::to_vec(records).map_err(|_| CacheError::Json)?;
         atomic_write(&self.path, &bytes)
     }
 
@@ -158,6 +244,19 @@ impl SnapshotCache {
     }
 
     pub fn save(&self, provider_id: &str, kind: &str, snapshot: Value) -> Result<(), CacheError> {
+        self.restore(provider_id, kind, snapshot, now_ms()?)
+    }
+
+    /// Saves a snapshot keeping its original capture time. Transfer import
+    /// uses this so a restored snapshot keeps reporting the moment it was
+    /// actually fetched on the source machine, not the import time.
+    pub fn restore(
+        &self,
+        provider_id: &str,
+        kind: &str,
+        snapshot: Value,
+        saved_at_ms: i64,
+    ) -> Result<(), CacheError> {
         if !is_safe_id(provider_id) || !is_safe_id(kind) {
             return Err(CacheError::Invalid);
         }
@@ -165,7 +264,7 @@ impl SnapshotCache {
         let entry = CachedSnapshot {
             provider_id: provider_id.to_string(),
             kind: kind.to_string(),
-            saved_at_ms: now_ms()?,
+            saved_at_ms,
             snapshot,
         };
         let bytes = serde_json::to_vec(&entry).map_err(|_| CacheError::Json)?;
@@ -379,6 +478,17 @@ fn rollup_expired_records(records: &mut Vec<DailyUsageRecord>, today: &str) {
     records.extend(expired.into_values());
 }
 
+/// The newest date present in the record set, as the rollup cutoff
+/// reference for merges (the newest record drives the cutoff, mirroring how
+/// `upsert` uses the incoming record's date).
+fn newest_date(records: &[DailyUsageRecord]) -> &str {
+    records
+        .iter()
+        .map(|record| record.date.as_str())
+        .max()
+        .unwrap_or_default()
+}
+
 fn now_ms() -> Result<i64, CacheError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -485,6 +595,136 @@ mod tests {
     }
 
     #[test]
+    fn restore_keeps_the_original_capture_time() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = SnapshotCache::new(&dir);
+
+        cache
+            .restore(
+                "kimi_cn",
+                "online",
+                serde_json::json!({"providerId": "kimi_cn", "primaryValue": "¥10.00"}),
+                1_787_194_023_645,
+            )
+            .expect("restore snapshot");
+
+        let snapshots = cache.load_all().expect("load cache");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].saved_at_ms, 1_787_194_023_645);
+        assert_eq!(snapshots[0].snapshot["primaryValue"], "¥10.00");
+    }
+
+    #[test]
+    fn merge_folds_incoming_records_without_losing_existing_ones() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+        history
+            .upsert(DailyUsageRecord {
+                date: "2026-10-08".into(),
+                slot: None,
+                minute: Some(727),
+                provider_id: "glm".into(),
+                requests: Some(1),
+                total_tokens: Some(100),
+                estimated_cost_cny: None,
+                balance_cny: None,
+            })
+            .expect("seed existing record");
+
+        let merged = history
+            .merge(vec![
+                DailyUsageRecord {
+                    date: "2026-10-07".into(),
+                    slot: None,
+                    minute: Some(10),
+                    provider_id: "kimi_cn".into(),
+                    requests: Some(2),
+                    total_tokens: Some(200),
+                    estimated_cost_cny: None,
+                    balance_cny: Some(52.5),
+                },
+                // Semantically invalid records are dropped, not fatal.
+                DailyUsageRecord {
+                    date: "2026-13-40".into(),
+                    slot: None,
+                    minute: None,
+                    provider_id: "kimi_cn".into(),
+                    requests: None,
+                    total_tokens: None,
+                    estimated_cost_cny: None,
+                    balance_cny: None,
+                },
+            ])
+            .expect("merge history");
+
+        let records = history.load().expect("load history");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(merged, 1);
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().any(|record| record.provider_id == "glm"));
+        assert!(records
+            .iter()
+            .any(|record| record.provider_id == "kimi_cn" && record.total_tokens == Some(200)));
+    }
+
+    #[test]
+    fn merge_dedupes_within_the_batch_and_replaces_existing_keys() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+        let record = |tokens: u64| DailyUsageRecord {
+            date: "2026-10-08".into(),
+            slot: None,
+            minute: Some(727),
+            provider_id: "glm".into(),
+            requests: Some(1),
+            total_tokens: Some(tokens),
+            estimated_cost_cny: None,
+            balance_cny: None,
+        };
+        history.upsert(record(100)).expect("seed existing");
+
+        let merged = history
+            .merge(vec![record(200), record(300)])
+            .expect("merge history");
+
+        let records = history.load().expect("load history");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(merged, 1);
+        assert_eq!(records.len(), 1);
+        // Within the batch the last record wins, and it replaces the existing
+        // sample for the same (date, minute, provider) key — same as upsert.
+        assert_eq!(records[0].total_tokens, Some(300));
+    }
+
+    #[test]
+    fn merge_returns_zero_for_an_empty_or_fully_invalid_batch() {
+        let dir = test_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = DailyUsageHistory::new(&dir);
+
+        assert_eq!(history.merge(Vec::new()).expect("empty merge"), 0);
+
+        let invalid = vec![DailyUsageRecord {
+            date: "not-a-date".into(),
+            slot: None,
+            minute: None,
+            provider_id: "glm".into(),
+            requests: None,
+            total_tokens: None,
+            estimated_cost_cny: None,
+            balance_cny: None,
+        }];
+        assert_eq!(history.merge(invalid).expect("invalid merge"), 0);
+        // Nothing was written, so no history directory materializes.
+        assert!(!dir.join("history").join("daily-usage.json").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn minute_samples_dedupe_per_minute_and_bridge_legacy_slots() {
         let dir = std::env::temp_dir().join(format!(
@@ -532,6 +772,7 @@ mod tests {
         assert_eq!(minutes, vec![(720, 80), (727, 150), (728, 200)]);
     }
 
+    #[test]
     fn upserts_daily_usage_by_date_and_provider() {
         let dir = std::env::temp_dir().join(format!(
             "llm-usage-daily-history-test-{}",

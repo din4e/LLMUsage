@@ -28,6 +28,14 @@ describe("importSummaryText", () => {
     expect(importSummaryText(results)).toBe("已导入 2 · 跳过 1 · 无效 1 · 点击 ↻ 立即同步");
   });
 
+  it("reports merged history records next to the outcome counts", () => {
+    const results = [entry({})];
+
+    expect(importSummaryText(results, 128)).toBe(
+      "已导入 1 · 跳过 0 · 无效 0 · 已迁移 128 条历史 · 点击 ↻ 立即同步",
+    );
+  });
+
   it("omits the sync nudge when nothing was saved", () => {
     const results = [entry({ outcome: "skipped", reason: "状态报告不含凭据" })];
 
@@ -74,20 +82,21 @@ describe("importResultLines", () => {
 });
 
 describe("buildExportRemarks", () => {
-  it("keeps remarks of configured instances only", () => {
+  it("keeps every non-empty remark; the backend intersects with enumerated instances", () => {
     const remarks = new Map([
       ["kimi_cn", "工作账号"],
       ["deepseek", "  "],
-      ["deleted_provider", "残留"],
+      ["glm", "备用"],
     ]);
 
-    expect(buildExportRemarks(remarks, new Set(["kimi_cn", "deepseek"]))).toEqual({
+    expect(buildExportRemarks(remarks)).toEqual({
       kimi_cn: "工作账号",
+      glm: "备用",
     });
   });
 
   it("handles empty inputs", () => {
-    expect(buildExportRemarks(new Map(), new Set())).toEqual({});
+    expect(buildExportRemarks(new Map())).toEqual({});
   });
 });
 

@@ -46,7 +46,7 @@ import {
   exportDefaultFileName,
   importResultLines,
   importSummaryText,
-  type ImportEntryResult,
+  type ImportOutcome,
 } from "./transfer";
 import { initializeWindowControls } from "./window-controls";
 import { renderBalanceTrendChart, renderDailyTrendChart, renderProviderChangeChart } from "./trend-chart";
@@ -1096,13 +1096,17 @@ async function runExport(mode: "full" | "status") {
     return;
   }
   try {
-    const summary = await invoke<{ instanceCount: number }>("export_provider_backup", {
-      path,
-      mode,
-      remarks: buildExportRemarks(instanceRemarks, configuredInstanceIds),
-    });
+    const summary = await invoke<{ instanceCount: number; historyCount: number }>(
+      "export_provider_backup",
+      {
+        path,
+        mode,
+        remarks: buildExportRemarks(instanceRemarks),
+      },
+    );
+    const history = summary.historyCount > 0 ? `、${summary.historyCount} 条历史` : "";
     setStatus(
-      `已导出 ${summary.instanceCount} 个实例${mode === "full" ? "（含明文密钥，请妥善保管）" : ""}`,
+      `已导出 ${summary.instanceCount} 个实例${history}${mode === "full" ? "（含明文密钥，请妥善保管）" : ""}`,
     );
   } catch (reason) {
     setStatus((reason as CommandError)?.message ?? "导出失败，请稍后重试", "error");
@@ -1110,9 +1114,10 @@ async function runExport(mode: "full" | "status") {
 }
 
 /**
- * Imports a transfer file. The backend saves credentials without any network
- * traffic; remarks follow their assigned ids and syncing stays a separate,
- * user-triggered step.
+ * Imports a transfer file. The backend saves credentials, restores the
+ * transferred snapshots, and merges the usage history — all without any
+ * network traffic; remarks follow their assigned ids and live syncing stays
+ * a separate, user-triggered step.
  */
 async function runImport() {
   if (!isTauri()) {
@@ -1127,7 +1132,8 @@ async function runImport() {
   });
   if (!path) return;
   try {
-    const results = await invoke<ImportEntryResult[]>("import_provider_backup", { path });
+    const outcome = await invoke<ImportOutcome>("import_provider_backup", { path });
+    const results = outcome.entries;
     for (const result of results) {
       if (result.outcome !== "saved" || !result.assignedInstanceId || !result.remark) continue;
       // Assigned ids are always freshly created, so a file remark can never
@@ -1136,7 +1142,14 @@ async function runImport() {
     }
     persistInstanceRemarks();
     await loadProviderInstances();
-    if (importResultSummary) importResultSummary.textContent = importSummaryText(results);
+    // Surface what the backend just restored — cached snapshots render as
+    // last-known rows and the merged history feeds the trend charts, so the
+    // dashboard matches the source machine before the first sync.
+    await loadCache();
+    await loadDailyUsage();
+    if (importResultSummary) {
+      importResultSummary.textContent = importSummaryText(results, outcome.historyMerged);
+    }
     if (importResultList) {
       importResultList.replaceChildren(
         ...importResultLines(results).map((line) => {
@@ -1147,7 +1160,7 @@ async function runImport() {
       );
     }
     importResultDialog?.showModal();
-    setStatus(importSummaryText(results));
+    setStatus(importSummaryText(results, outcome.historyMerged));
   } catch (reason) {
     setStatus((reason as CommandError)?.message ?? "导入失败，请稍后重试", "error");
   }
@@ -1403,7 +1416,7 @@ document.addEventListener("click", (event) => {
     pendingExportMode = "full";
     prepareConfirmDialog(
       "导出完整备份",
-      "完整备份将以明文包含所有已配置实例的 API Key。任何拿到该文件的人都能使用你的密钥。确定继续导出吗？",
+      "完整备份将以明文包含所有已配置实例的 API Key，并附带各实例缓存摘要与整段用量历史。任何拿到该文件的人都能使用你的密钥。确定继续导出吗？",
       "继续导出",
     );
     confirmDialog?.showModal();
@@ -1562,6 +1575,20 @@ providerForm?.addEventListener("submit", async (event) => {
 });
 
 dialog?.addEventListener("close", () => credentialFields?.replaceChildren());
+
+// The WebView cannot navigate externally by itself; the Rust command hands
+// the repository URL to the system browser. The href stays on the anchor for
+// copy/assistive-tech purposes.
+document
+  .querySelector<HTMLAnchorElement>('a[data-action="open-repo"]')
+  ?.addEventListener("click", async (event) => {
+    event.preventDefault();
+    try {
+      await invoke("open_project_repository");
+    } catch (reason) {
+      setStatus((reason as CommandError)?.message ?? "无法打开链接", "error");
+    }
+  });
 
 confirmForm?.addEventListener("submit", async (event) => {
   event.preventDefault();

@@ -9,14 +9,25 @@ export interface ImportEntryResult {
   reason?: string | null;
 }
 
+/** Mirrors the Rust `ImportOutcome`: per-entry results plus the number of
+ *  history records merged into the local usage file. */
+export interface ImportOutcome {
+  entries: ImportEntryResult[];
+  historyMerged: number;
+}
+
 /** One-line summary for the status bar; empty input is not an error. */
-export function importSummaryText(results: readonly ImportEntryResult[]): string {
+export function importSummaryText(
+  results: readonly ImportEntryResult[],
+  historyMerged = 0,
+): string {
   if (!results.length) return "没有可导入的实例";
   const saved = results.filter((result) => result.outcome === "saved").length;
   const skipped = results.filter((result) => result.outcome === "skipped").length;
   const invalid = results.filter((result) => result.outcome === "invalid").length;
+  const history = historyMerged > 0 ? ` · 已迁移 ${historyMerged} 条历史` : "";
   const suffix = saved > 0 ? " · 点击 ↻ 立即同步" : "";
-  return `已导入 ${saved} · 跳过 ${skipped} · 无效 ${invalid}${suffix}`;
+  return `已导入 ${saved} · 跳过 ${skipped} · 无效 ${invalid}${history}${suffix}`;
 }
 
 /** Per-entry lines for the import result dialog, keyed by display name. */
@@ -38,14 +49,16 @@ function importEntryName(sourceProviderId: string): string {
   return provider ? provider.name : sourceProviderId;
 }
 
-/** Remarks payload for the export command: configured instances, non-empty only. */
+/** Remarks payload for the export command: non-empty remarks only. The Rust
+ *  side intersects this map with the instances it actually enumerates, so a
+ *  stale frontend instance list (e.g. listing failed at startup) cannot
+ *  silently drop remarks from the backup. */
 export function buildExportRemarks(
   instanceRemarks: ReadonlyMap<string, string>,
-  configured: ReadonlySet<string>,
 ): Record<string, string> {
   const remarks: Record<string, string> = {};
   for (const [instanceId, remark] of instanceRemarks) {
-    if (configured.has(instanceId) && remark.trim()) remarks[instanceId] = remark;
+    if (remark.trim()) remarks[instanceId] = remark;
   }
   return remarks;
 }

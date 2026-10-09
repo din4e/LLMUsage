@@ -8,7 +8,7 @@ use llm_usage_core::providers::online::{
 };
 use llm_usage_core::secret::{SecretError, SecretVault};
 use llm_usage_core::transfer::{
-    ExportSummary, ImportEntryResult, TransferFileError, TransferMode, TransferPayload,
+    ExportSummary, ImportOutcome, TransferFileError, TransferMode, TransferPayload,
 };
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
@@ -197,6 +197,13 @@ impl CommandError {
         Self {
             code: "UPDATE_DOWNLOAD_FAILED",
             message: "更新下载失败，请稍后重试",
+        }
+    }
+
+    fn open_link_failed() -> Self {
+        Self {
+            code: "OPEN_LINK_FAILED",
+            message: "无法打开系统浏览器，请手动访问 GitHub 仓库",
         }
     }
 }
@@ -726,10 +733,11 @@ pub fn delete_provider(app: tauri::AppHandle, provider_id: String) -> Result<(),
     Ok(())
 }
 
-/// Writes a versioned transfer file to the user-chosen path. Full mode
-/// includes every decrypted credential plus the cached remaining-status
-/// snapshot; status mode exports the status blocks only. The only plaintext
-/// copy ever written is this single user-chosen file.
+/// Writes a versioned transfer file to the user-chosen path. Full mode is a
+/// complete migration unit: every decrypted credential, each instance's
+/// verbatim cached snapshot, and the whole daily usage history. Status mode
+/// exports the normalized status blocks only. The only plaintext copy ever
+/// written is this single user-chosen file.
 #[tauri::command(rename_all = "camelCase")]
 pub fn export_provider_backup(
     app: tauri::AppHandle,
@@ -747,6 +755,9 @@ pub fn export_provider_backup(
     let instances = llm_usage_core::transfer::enumerate_instances(&app_data);
     let snapshots = SnapshotCache::new(&app_data)
         .load_all()
+        .unwrap_or_default();
+    let history = DailyUsageHistory::new(&app_data)
+        .load()
         .unwrap_or_default();
     let mut credentials = std::collections::BTreeMap::new();
     if mode == TransferMode::Full {
@@ -770,13 +781,19 @@ pub fn export_provider_backup(
         &instances,
         &snapshots,
         &credentials,
+        &history,
         now_ms,
     );
     let count = payload.instances.len();
-    let json = serde_json::to_vec_pretty(&payload).map_err(|_| CommandError::export_failed())?;
+    let history_count = payload.history.len();
+    let json = llm_usage_core::transfer::encode_transfer_file(&payload)
+        .map_err(|_| CommandError::export_failed())?;
     std::fs::write(&path, json).map_err(|_| CommandError::export_failed())?;
     restrict_backup_permissions(&path);
-    Ok(ExportSummary { instance_count: count })
+    Ok(ExportSummary {
+        instance_count: count,
+        history_count,
+    })
 }
 
 /// Full backups contain plaintext API keys. On Unix the default umask would
@@ -792,17 +809,21 @@ fn restrict_backup_permissions(path: &str) {
 #[cfg(not(unix))]
 fn restrict_backup_permissions(_path: &str) {}
 
-/// Reads a transfer file and saves every importable credential into the
-/// vault without any network traffic. Existing instances are never
-/// overwritten — collisions import under the next free `_N` suffix. Nothing
-/// is written to the snapshot cache, daily history, or logs, and the
-/// returned results carry no credential bytes.
+/// Reads a transfer file and applies it without any network traffic:
+/// credentials land in the vault under non-colliding instance ids, the
+/// transferred snapshots are restored into the local cache, and the usage
+/// history is merged onto the assigned ids — so the dashboard and trends
+/// immediately match what the source machine exported. Credentials already
+/// configured locally are skipped instead of duplicated. The returned
+/// results carry no credential bytes.
 #[tauri::command(rename_all = "camelCase")]
 pub fn import_provider_backup(
     app: tauri::AppHandle,
     path: String,
-) -> Result<Vec<ImportEntryResult>, CommandError> {
-    const MAX_READ_BYTES: u64 = 2 * 1024 * 1024 + 1;
+) -> Result<ImportOutcome, CommandError> {
+    // Full backups embed the whole usage history (up to ~8 MiB compact on
+    // the source machine), so the read cap matches the transfer-file cap.
+    const MAX_READ_BYTES: u64 = 10 * 1024 * 1024 + 1;
     // Known TOCTOU: the size is checked on metadata, then the file is read.
     // Acceptable for a local desktop app where the user hand-picks the file;
     // the parse step below still enforces structural caps.
@@ -826,14 +847,45 @@ pub fn import_provider_backup(
             },
         )?;
     let existing = llm_usage_core::transfer::enumerate_instances(&app_data);
-    let results = llm_usage_core::transfer::apply_import(&payload, &app_data, &existing);
+    let outcome = llm_usage_core::transfer::apply_import(&payload, &app_data, &existing);
     // Wipe the parsed plaintext credentials before returning.
     for entry in &mut payload.instances {
         if let Some(credential) = entry.credential.as_mut() {
             credential.zeroize();
         }
     }
-    Ok(results)
+    Ok(outcome)
+}
+
+/// Opens the project GitHub repository in the system browser. The WebView
+/// cannot navigate externally by itself, and the URL is a compile-time
+/// constant — not a parameter — so a compromised WebView cannot turn this
+/// into a generic "open arbitrary URL" primitive.
+#[tauri::command(rename_all = "camelCase")]
+pub fn open_project_repository() -> Result<(), CommandError> {
+    const REPOSITORY_URL: &str = "https://github.com/din4e/LLMUsage";
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler").arg(REPOSITORY_URL);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(REPOSITORY_URL);
+        command
+    };
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(REPOSITORY_URL);
+        command
+    };
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| CommandError::open_link_failed())
 }
 
 #[cfg(test)]

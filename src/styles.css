@@ -470,6 +470,9 @@ progress::-webkit-progress-value { background: linear-gradient(90deg, var(--acce
 .about-section .eyebrow { margin-bottom: 1px; }
 .about-section h3 { margin: 0 0 7px; font-size: 15px; letter-spacing: -.02em; font-weight: 640; }
 .about-copy { color: var(--muted); font-size: 14px; line-height: 1.65; }
+.about-repo { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.about-repo a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+.about-repo a:hover { color: var(--accent-strong); border-bottom-color: var(--accent-strong); }
 .about-unified .about-grid { margin: 12px 0 2px; }
 .about-fact { position: relative; min-height: 46px; padding: 6px 12px 5px; overflow: hidden; }
 .about-fact span { display: block; margin-bottom: 1px; color: var(--muted); font-size: 12px; }

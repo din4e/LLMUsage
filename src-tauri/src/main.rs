@@ -56,6 +56,7 @@ fn main() {
             app::load_daily_usage,
             app::export_provider_backup,
             app::import_provider_backup,
+            app::open_project_repository,
             auto_sync::set_auto_sync_interval,
             update::check_for_update,
             update::download_and_install_update
