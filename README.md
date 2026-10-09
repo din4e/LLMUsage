@@ -4,7 +4,7 @@
 >
 > 源码仓库：<https://github.com/din4e/LLMUsage>
 
-![版本](https://img.shields.io/badge/version-v0.1.11-087b5d)
+![版本](https://img.shields.io/badge/version-v0.1.12-087b5d)
 ![平台](https://img.shields.io/badge/platform-Windows_10%2F11-006ea6)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
 ![前端](https://img.shields.io/badge/frontend-TypeScript-F7DF1E)
